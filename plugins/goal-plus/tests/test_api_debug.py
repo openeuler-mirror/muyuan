@@ -27,7 +27,7 @@ def test_mcp_response_size_is_opt_in_and_counts_utf8(
     result = asyncio.run(call())
     captured = capsys.readouterr()
     assert json.loads(result.content[0].text) == payload
-    assert result.structured_content == (payload if tool == "goal_plus_status" else None)
+    assert result.structured_content is None
     assert captured.out == ""
     if not enabled:
         assert captured.err == ""
@@ -36,7 +36,7 @@ def test_mcp_response_size_is_opt_in_and_counts_utf8(
         "event": "goal_plus_api_response_size",
         "transport": "mcp",
         "tool": tool,
-        "format": "json" if tool == "goal_plus_status" else "text",
+        "format": "json",
         "bytes": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
         "characters": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
     }

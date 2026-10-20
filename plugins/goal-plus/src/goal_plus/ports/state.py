@@ -18,8 +18,9 @@ from goal_plus.domain.agents import SelectedModel
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.evidence import (
-    PendingVerification,
+    CandidateAttemptAccepted,
     IterationRecord,
+    PendingVerification,
     ResultLedgerEntry,
     ScoreReport,
 )
@@ -32,7 +33,9 @@ from goal_plus.domain.promotion import (
 from goal_plus.domain.search import (
     BootstrapVerification,
     CandidateRecovery,
+    CandidateSpecRevision,
     CandidateTask,
+    DispatchGroupState,
     RunState,
     VerifierInvalidationReason,
 )
@@ -158,6 +161,7 @@ class RunRecord(SearchModel):
     best_candidate_id: str | None = None
     best_score: float | None = None
     selected_candidate_id: str | None = None
+    selected_frozen_spec_id: str | None = None
     selected_score: float | None = None
     selected_hard_score: float | None = None
     selected_quality_score: float | None = None
@@ -187,12 +191,30 @@ class RunRecord(SearchModel):
         default_factory=list,
         exclude_if=lambda value: not value,
     )
+    dispatch_group: DispatchGroupState | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_group(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "fork" in value:
+            raise ValueError("legacy top-level fork field is unsupported; use dispatch_group")
+        return value
+
+    @property
+    def fork(self) -> DispatchGroupState | None:
+        """Read-only compatibility view; persisted state uses dispatch_group."""
+        return self.dispatch_group
 
 
 class CandidateRecord(SearchModel):
     candidate_id: str
     status: Literal["created", "evaluated", "failed"]
     task: CandidateTask
+    active_frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    active_spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_revisions: list[CandidateSpecRevision] = Field(default_factory=list, exclude_if=lambda value: not value)
     allocation_eligibility: AllocationEligibility = "eligible"
     retired_by_decision_id: str | None = Field(
         default=None,
@@ -207,6 +229,7 @@ class CandidateRecord(SearchModel):
     pending_tool_copies: list[ToolCopyReceipt] = Field(default_factory=list, exclude_if=lambda value: not value)
     iterations: list[IterationRecord] = Field(default_factory=list)
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
+    results_ledger_metric_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
     results_ledger_git_head: str | None = None
     results_ledger_artifact_ref: ArtifactRef | None = None
     initial_attempt_base_artifact_ref: ArtifactRef | None = None
@@ -214,6 +237,7 @@ class CandidateRecord(SearchModel):
     recovery: CandidateRecovery | None = None
     verification: PendingVerification | None = None
     verification_request: LocalVerificationRequest | None = None
+    accepted_attempt: CandidateAttemptAccepted | None = Field(default=None, exclude_if=lambda value: value is None)
     inner_agent_state: dict[str, Any] = Field(default_factory=dict)
     provider_mutations: list[ProviderMutationRecord] = Field(default_factory=list)
 

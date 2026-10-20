@@ -14,7 +14,7 @@ Goal Mode 完成；具备明确 metric 和 verifier 的优化任务进入 Search
 
 - 用户目标、执行状态和证据在会话退出后仍可恢复；
 - Codex 与 Pi 共用同一套领域规则；
-- candidate 可自主探索，但不能改变评价合同或访问 peer 私有工作区；
+- candidate 可自主探索并通过窄接口创建不可变评价修订，但不能改写冻结合同、扩大权限或访问 peer 私有工作区；
 - 最佳结果绑定精确 artifact，而不是模型自述或当前目录的偶然状态；
 - 未启用的能力不占用 worker context，也不暗示不存在的工具或数据。
 
@@ -69,9 +69,10 @@ ThinkThread 的 Goal Plus runtime 目录必须位于 Root 附着文件树之外�
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
 Direct Copy/Git worker 默认使用共同 sandbox 声明：Codex 原生策略、Pi OS wrapper。
 安装时系统后端缺失可以保留缺失状态并提示；执行时不得退回不受保护的命令。
-Pi Linux/macOS 共用路径与 cwd 归属校验。子进程临时文件优先使用系统 `/tmp` 下的专属
-目录；目录缺失、只读或权限不足时退到 cwd 下的 `.gp/.tmp`，仅授权专属目录并设置临时
-环境变量，正常关闭时清理。临时目录 fallback 不改变 sandbox 强制执行。
+Pi Linux/macOS 共用路径与 cwd 归属校验。子进程临时文件默认使用 cwd 下 `.tmp` 中的
+专属目录；可通过 `GOAL_PLUS_TMPDIR` 显式选择已授权的数据盘目录。仅授权专属目录并
+设置临时环境变量，正常关闭时清理。Linux namespace 仍提供私有 `/tmp`，但不会把宿主
+全局 `/tmp` 作为 Goal Plus scratch 默认位置。临时目录位置不改变 sandbox 强制执行。
 该边界不改变 Main 权限，也不承诺共享 runtime 写根之外的完整安全隔离；
 设计、支持范围及角色写入例外见 [Agent sandbox](docs/sandbox.md)。
 两端不发布 Goal Plus 导航 skill。命令仍由宿主授权，公共导航来自 MCP instructions；
@@ -101,12 +102,14 @@ Pi 额外记录每轮 provider 请求快照；Codex CLI 不提供该请求体，
 Codex Stop、Pi 回合结束/Main 会话关闭和 TT 归档完成后自动刷新完整 runtime 的
 `host-logs/agent-transcript/index.html`；报告生成前也刷新，使 report.html 能链接到该页面。
 合并导出按 runtime 串行收集和写入，单会话回调不覆盖其他会话；不启动后台 watcher。
-DEBUG 开启时，TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
+DEBUG 开启时，TT Pi Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
 Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host-logs/session-diagnostics/`。
 已发送游标保存在原生 custom entry，跨同一 session 的 Pi 进程重建延续增量，不作为业务恢复依据。
-归档保留完整的 Pi native session entry，同时供运行诊断和离线行为复盘使用；批次按大小切分，
+归档保留已收到的完整 Pi native session entry，同时供运行诊断和离线行为复盘使用；批次按大小切分，
 并保留压缩校验、entry identity、sequence/cursor 和 partial 状态。Main 索引引用原生历史，
-不复制完整历史。
+不复制完整历史。TT Child 释放前若 Root 可读取准确绑定的 Codex/Pi 原始历史，另在本地保存
+带内容哈希的副本，释放后可从该副本重新导出。Codex TT 尚不通过每轮 Message 发送原始历史，
+Root 无法跨隔离边界读取时不得声称已经保留完整 Child 历史。
 诊断归档不授予执行权，不进入模型上下文，不改变结算或清理 gate；缺失批次、损坏记录和
 采集失败不得作为完整证据。突然退出前未送出的尾部不保证保留，外部删除 Root 后也不保证
 保留其 runtime；默认不外传或上传归档。
@@ -119,7 +122,7 @@ Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host
 | Dispatch attempt | Main 实际发起的一次原生 subagent 派发及其 attempt/generation |
 | SearchSpec | Main Agent 准备的可执行评价合同 |
 | FrozenSpec | 已校验、固定 source 和 verifier artifact 的不可变合同 |
-| Search run | 在一份 FrozenSpec 上执行的一次搜索 |
+| Search run | 绑定初始 FrozenSpec 的一次搜索，可包含 candidate 自身的不可变评价修订 |
 | SearchPlan | 为 run 一次性分配初始 candidate lanes 的计划 |
 | Candidate | 一条长期探索 lane 及其隔离 workspace、iteration 和 best artifact |
 | AgentSessionRecord | candidate 与 host-native session 的上下文/来源绑定，不表示进程存活 |
@@ -186,6 +189,11 @@ Pi bridge 已使用该绑定；默认 Codex MCP 的可信角色事实仍由原�
 受信任的 Codex app-server candidate 声明只收窄角色；原生 hook 必须同时核对当前代际的
 candidate session、app-server handle 和准确 native thread 才授予候选工具与文件修改权限。
 缺失或不匹配的绑定不能退回 Main 权限，也不能按模型参数猜测另一 candidate identity。
+
+所有 Goal Plus MCP 工具的成功结果只编码为 `content` 中一个紧凑 JSON `TextContent`，
+不附带 `structuredContent`，也不声明 `outputSchema`。共同传输边界覆盖 direct 与
+ThinkThread 的 Main、candidate 和内部角色，JSON 解析后的业务对象及列表保持原字段、
+类型和值。MCP 错误保留 `isError` 与诊断内容；Pi-local facade 继续提供结构化 `details`。
 
 统一 native session 控制使用宿主 MCP metadata 中的当前 Main thread identity；模型参数仅
 标识目标 candidate/session。run 和 message 必须匹配已授权 Goal 的当前 revision、attached Main、
@@ -362,8 +370,53 @@ promotion 分数替代。评估完成与候选通过分别记录：明确无效�
 当作无效基线；diagnostic 失败不阻断。分类由 evaluator 或了解任务的适配器提供，不得
 一律吞错转零分。promotion suite 仅提升时执行，freeze 不证明其可用。
 
-FrozenSpec 创建后不可原地改写。评价合同有误时，使旧 run invalid，冻结新合同并创建
-successor run；不同合同的分数不得直接比较。
+FrozenSpec 创建后不可原地改写。Main 修订完整合同仍通过冻结新合同和 successor run；
+固定并行/fork candidate 可通过窄 revision 接口创建自身评价版本，继承 source、
+edit surface、预算、模型、能力及冻结 verifier 字节。每次 attempt 固定执行版本，旧 Evidence
+不重建，另一分支不切换；不同版本的分数不得直接比较。详见
+[分支评价版本](docs/shared-plane.md#分支评价版本)。
+
+`strategy.initial_context=fork` 是 provider-neutral 的 Search 初始上下文来源，默认关闭。
+Main 在 frozen spec、preflight 和共同完成边界之后，由对应 host adapter 创建独立 native 分支；
+每个分支保存不可变 fork binding（checkpoint provenance、branch identity、workspace 或 Fs
+attachment、预算与工具能力）。当前已实现 direct Codex/Pi adapter，ThinkThread adapter 也已
+接入共同 owner、Main Root 完成历史的边界检查和 fork receipt；TT SDK 没有 exact native
+checkpoint selector/receipt，Root digest 不等于 provider 派生证明。真实 Circle 场景证据不能
+扩大为 SDK checkpoint 保证或所有异常恢复路径，
+详见 [宿主支持范围](docs/agent-host-adapters.md#fork-支持范围)。
+
+Candidate 的 `fresh` 与 `fork` 共用 session identity、dispatch target、provider receipt、
+native binding、continuation 和 close/cleanup 状态；它们的唯一业务差异是初始上下文来源。
+`fresh` 从 frozen baseline/workspace 创建，`fork` 从已完成的父 checkpoint 派生。统一生命周期、
+状态图和恢复 fence 见 [Candidate Dispatch：fresh 与 fork](docs/candidate-dispatch.md)。
+普通 delegation 和固定并行初始上下文不经过 fork 派生路径。分支 spec 修订只能生成带
+`parent_frozen_spec_id`、`revision_reason` 和新 `spec_hash` 的新 FrozenSpec，旧 artifact、iteration、
+verifier record 和 selection trace 不会被覆盖或重新解释。
+Candidate active 版本独立于初始 fork binding。Selection 只在 Main 指定的 frozen_spec_id
+内按该版本 ranking 选择；省略时使用 run 初始版本。选定版本随 artifact 持久化，promotion
+与独立 publication verifier 使用该选定版本，不能用另一版本的通过事实替代。
+
+Fork 的上层语义统一为：固定父 checkpoint → 派生 N 个隔离分支 → 绑定 run/candidate/session
+和 provider receipt → 使用共同 session control 执行 → hard settlement → 可选 LLM audit →
+selection → promotion/apply。父 Main 始终保留 Goal/Search/apply 权限；分支不能自行 apply。
+Provider 差异只存在于 host adapter（Codex thread fork、Pi SessionManager forkFrom、
+ThinkThread `thinkthread.fork` 与 private COW Fs）。缺少完整 checkpoint 或可审计 receipt 时
+必须 fail closed，不能用 `spawn` 后宣称同一上下文。
+
+Goal resume 恢复 Main 授权与控制状态，不选择 fresh/fork，也不自动派生 candidate。
+Pi helper/marker 证明准备回合已完成；具体派生边界由 provider adapter 解释，TT Pi 的
+completed turn 以 final assistant `stop` 为界，不能将 Direct Pi 的完整工具组 entry 混作同一边界。
+
+Prepared fork group 只能恢复原派生的持久 exact receipt；缺失 outcome 时保持执行 fence，
+不重发 fork、spawn 或 wake。历史 launch receipt 保持不可变，后续 close facts 独立保存。
+全部 started branches 收到可信 close facts 后，group 才转为 closed；partial/failed 不变成
+成功 closed。Direct controller 关闭与 TT Child/Fs 释放分别由对应 adapter 证明。
+
+Fork 可选 `strategy.llm_validation=off|advisory|required`。该审计只读取
+`ForkAuditContext`，hard settlement 仍是权威 Evidence；advisory 结果不阻止旧 selection，
+required 结果未完成时不得静默绕过 selection gate。真实 host 上下文保留、并发和成本按
+Codex/Pi direct 与 ThinkThread 各自 Circle E2E 的实际证据判定，不能由 JSONL 复制或 Z3
+单独证明，不能从一个组合的通过推导另一个组合。
 
 FrozenSpec 绑定 Goal revision。模型侧 create 在副作用前保存 request_id 指纹、revision/control
 version 与预分配 run ID，分阶段恢复创建、bootstrap 和 Goal 关联。同请求返回原 run，参数冲突
@@ -420,12 +473,16 @@ workspace 不具备该宽容语义。
 8. 对选中 artifact 执行 promotion verifier
 9. 在用户授权时 apply，否则输出 artifact-only publication
 10. Goal 记录 Search result，完成 final audit/可选 final check，进入终态
-11. 终态后生成一次 report
+11. 终态后生成一次 report，并在 cleanup 与最终刷新之后打包本地可视化交付件
 
-`parallel_loops` 使用固定 lanes：只做初始分配，不因低分补建 candidate；后续优先继续同一
-native session，必要时才在相同 candidate/workspace 上 redispatch。
+最终报告同时生成 `runs/<run_id>/report-bundle.zip`，包含离线入口、已有的 MD/HTML 报告及
+会话可视化导出，保持相对链接。打包只读取派生产物，不扩大 DEBUG 采集范围；未导出的
+会话在入口中明确标为缺失，不以打包成功宣称历史完整。
 
-`parallel_loops` 和 `adaptive_search` 共享固定的 LLM-Verifier 质量规则与逐级容差 Selection。
+未配置 `strategy.adaptive_search` 时使用固定 lanes：只做初始分配，不因低分补建 candidate；
+后续优先继续同一 native session，必要时才在相同 candidate/workspace 上 redispatch。
+
+固定并行和可选 `adaptive_search` 共享固定的 LLM-Verifier 质量规则与逐级容差 Selection。
 显式配置 `strategy.verifier` 或 Selection 使用 `quality_score` 时，settlement 提交单次事实、身份和 diff，
 并幂等推入 Verifier 队列。评估器内部处理模型失败、缺分与重试，最终生成绑定精确
 candidate、iteration、settlement 和 artifact 的完整评分或失败 VerifierRecord。通用 `scores`
@@ -433,7 +490,8 @@ candidate、iteration、settlement 和 artifact 的完整评分或失败 Verifie
 `quality_score`。FrozenSpec 分别固化指标 key 选择和 policy 版本/参数。Verifier 冻结自己的规则到
 task，Record 的评分 key 就是唯一得分身份；score contract hash 绑定规则，不充当指标版本。
 公共策略配置在 Freeze 前补齐已启用 Allocation/Steering 声明的输入指标，保留用户额外选择的
-key；未知或重复 key 仍拒绝。提供 allocation 或 steering 时自动选择 adaptive_search；显式冲突模式仍拒绝。
+key；未知或重复 key 仍拒绝。`strategy.adaptive_search` 至少配置 allocation 或 steering；省略该对象时使用固定并行。
+`initial_context=fork` 与 `adaptive_search` 当前拒绝，直到 fork successor dispatch 有完整生命周期接线。
 parameters 省略的字段使用 policy 版本已有默认值，完整配置参与冻结与 spec hash。
 没有 policy 时，Selection 使用 quality_score 也补齐基础 Verifier 配置。仅 hard_score Selection
 不需要模型；没有 policy、没有质量评分需求且未显式配置 verifier 时才关闭 LLM-Verifier。
@@ -456,10 +514,11 @@ Freeze 从 Goal 当前已授权的 Main 会话取得 harness，由装配层解�
 保存必填 `FrozenSpec.agent_harness`、`runtime_provider` 并一起纳入 spec hash。
 工作区不能改写 agent 身份；模型不能指定 caller 身份。支持 Codex/Pi + direct + Copy/Git，
 以及通过 Root/Profile/capability preflight 的 Pi + ThinkThread 和 Codex + ThinkThread
-（TT workspace）；两者都支持 `parallel_loops` 和 `adaptive_search`。
-Codex + ThinkThread 不支持显式 `workers=` 模型 override 与
-`reasoning_effort`/`service_tier`，TT Root 内的 Ultra delegation、final check 与
-Stop-hook 续跑保持不支持。
+（TT workspace）；两者都支持固定并行和 `adaptive_search`，fork 由 host adapter 单独接线。
+Codex + ThinkThread 支持 Profile allowlist 内 exact provider/model 的显式 worker override；
+Pi + ThinkThread 采用 Profile 默认模型，不支持任务级 override。TT 两端均不支持任务级
+`reasoning_effort`/`service_tier`；TT Root Ultra delegation、独立 final check 与 Codex Stop-hook
+续跑保持不支持，完整组合见[宿主支持范围](docs/agent-host-adapters.md#fork-支持范围)。
 
 Session、session_handle、角色 profile、worker policy 和调用观测分别表达 harness/provider；
 状态 owner 在执行或写入前核对冻结绑定、精确 handle、scope 和 generation。
@@ -494,12 +553,10 @@ default。shared runtime 不启动模型，也不等待模型进程。Verifier t
 required selection score 尚不可用时，selection
 保持 wait/blocked，不能运行时改变 `ranking_keys` 降级。
 
-模型目录只用于解析显式 model 引用，不构成推理连通性证明。现有 Codex hook/Pi extension
-入口必须在 Goal 创建和 SearchSpec freeze 前，收集本次新增的显式 worker 与 Annotation
-model override，按模型去重并并发执行最小推理请求；任一失败时不得创建 Goal 或冻结
-SearchSpec。没有显式 override 时不发送 probe：正在运行的 Main 已经证明当前模型可用，内部
-agent 保持 host 原生继承语义。该检查只使用 native host model 接口，不读取或传递 API
-key、endpoint 或独立 provider 配置。
+模型目录只用于解析显式 model 引用，不构成推理连通性证明。Goal 命令与 SearchSpec freeze
+按宿主 catalog、配置和 capability 检查显式 worker/Annotation model，不发送额外推理 probe。
+provider 的实际可用性由对应 agent invocation 验证，失败原因写入执行记录；缺省模型继续按
+host 原生继承语义解析。领域状态不读取或传递 API key、endpoint 或独立 provider 配置。
 
 LLM Verifier 输出是不可信的局部评估。Verifier owner 校验动态 schema、精确 subject、task identity、
 task 自身的 verifier score contract、lease 与幂等前态；它不能返回 winner 或可执行 Decision。Selection 和
@@ -553,6 +610,12 @@ metric 和 `candidate_task`；这些内容共同构成 worker 的完整运行合
 - 仅针对当前已启用能力动态生成的 instructions；
 - task-local、Git-tracked skill 路径。
 
+宿主绑定当前 candidate session；模型调用自己的 context、verifier 等候选工具时不重复传入
+`agent_session_id`，verifier 的自身 `run_id` 和 `candidate_id` 也由宿主注入。引用其他 Evidence
+或 source 的目标标识仍由模型按工具合同提供。Launch 只保留追踪标签、单句 intent 和读取
+context 的引导；proposal 的假设、tradeoff、instructions 及显式 Main goal 由 `candidate_task`
+统一提供。
+
 Candidate 可以读取 workspace 内所有任务文件并进行本地诊断，但交付修改只能落在
 `allowed_files`。冻结 verifier 和 `denied_files` 保持只读。`.tmp/` 是 candidate-local scratch，
 不属于交付 artifact。
@@ -564,7 +627,7 @@ Candidate 不应获得：
 - peer 的真实 workspace、transcript 或私有推理；
 - hidden evaluation、credential 或任意 host environment variable。
 
-本地命令只提供分析信息。`goal_plus_search_run_verifier(agent_session_id=...)` 是唯一形成正式 Evidence
+本地命令只提供分析信息。宿主绑定的 `goal_plus_search_run_verifier` 是唯一形成正式 Evidence
 并参与共享搜索的验证路径。Verifier settlement 后，runtime 以已结算 workspace 状态作为下一
 轮起点。
 
@@ -616,7 +679,9 @@ Pi adapter 使用原生 RPC，ThinkThread adapter 使用 retained Child 与 Mess
 Monitor 的 `candidate_sessions` 只展示这些已采集资源状态，缺失记录不能证明关闭。
 
 Host 持有的 launch payload 是权威映射输入。Runtime 不轮询 host 进程，不把 host liveness
-写进 Search 领域状态。`AgentSessionRecord` 只保存绑定、上下文和 provenance。
+写进 Search 领域状态。`AgentSessionRecord` 只保存绑定、上下文和 provenance。Fork
+host 只返回 checkpoint/launch/close receipt；fork、worker 进程、session handle 和
+workspace cleanup 由 host 持有，runtime 不轮询进程或等待分支。
 候选启动输入不包含模型侧的 native spawn/followup 工具脚本；行为由 `inner_agent` 选择，
 不接受旧 `worker_agent_type`。候选 handle 使用 `external_id` 绑定原生 session，不接受
 task name 作为替代身份。Codex hook 只从可信启动声明与持久化的准确 app-server handle

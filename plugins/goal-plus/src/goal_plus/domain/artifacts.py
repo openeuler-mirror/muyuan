@@ -7,6 +7,7 @@ from pathlib import (
     PurePosixPath,
 )
 from typing import (
+    Annotated,
     Any,
     Literal,
 )
@@ -20,6 +21,40 @@ from pydantic import (
 from goal_plus.domain.base import SearchModel
 
 WorkspaceProvider = Literal["copy", "git_worktree", "thinkthread"]
+
+
+class LocalWorkspaceAttachment(SearchModel):
+    """Actual local workspace materialized for a native branch."""
+
+    provider: Literal["copy", "git_worktree"]
+    path: Path
+
+    @field_validator("path")
+    @classmethod
+    def absolute_path(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("local workspace attachment requires an absolute path")
+        return value
+
+
+class ThinkThreadWorkspaceAttachment(SearchModel):
+    """Provider facts for a private Child branch; never a local path proof."""
+
+    provider: Literal["thinkthread"] = "thinkthread"
+    root_thinkthread_id: str = Field(min_length=1)
+    fs_branch_id: str = Field(min_length=1)
+    baseline_snapshot_id: str = Field(min_length=1)
+
+
+WorkspaceAttachment = Annotated[
+    LocalWorkspaceAttachment | ThinkThreadWorkspaceAttachment,
+    Field(discriminator="provider"),
+]
+
+# Provider-neutral dispatch terminology for immutable provider attachments.
+LocalDerivedWorkspaceAttachment = LocalWorkspaceAttachment
+ThinkThreadDerivedWorkspaceAttachment = ThinkThreadWorkspaceAttachment
+DerivedWorkspaceAttachment = WorkspaceAttachment
 
 
 ArtifactKind = Literal["git_commit", "fs_snapshot"]

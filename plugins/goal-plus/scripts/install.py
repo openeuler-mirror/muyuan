@@ -696,11 +696,16 @@ def _build_thinkthread_codex_config(
             "env_vars": [
                 "GOAL_PLUS_THINKTHREAD_ROLE", "GOAL_PLUS_ROOT", "GOAL_PLUS_NODE",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "GOAL_PLUS_AGENT_POSIX_BRIDGE",
+                # TT assigns each actor its own writable native session home.
+                # Fork checkpoint inspection must read this actor's rollout.
+                "CODEX_HOME",
                 # The managed Profile supplies this value through configDirDefault;
                 # forward it to the Goal Plus MCP so its configuration preflight
                 # inspects the same isolated Codex config as the Child.
                 "CODEX_CONFIG_DIR",
                 "THINKTHREAD_PARENT_ID", "THINKTHREAD_CONTROL_SOCKET", "THINKTHREAD_CONTROL_TOKEN",
+                "GOAL_PLUS_DEBUG",
+                "GOAL_PLUS_TMPDIR",
                 "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
                 "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
             ],
@@ -711,7 +716,10 @@ def _build_thinkthread_codex_config(
     config["mcp_servers"]["goal-plus"]["env_vars"] = sorted(
         set(config["mcp_servers"]["goal-plus"]["env_vars"]) | set(codex_env_vars)
     )
-    config["features"] = {"multi_agent": False}
+    # ThinkThread runs one isolated Codex Child per actor.  Disable the shared
+    # app-server daemon inside the Child; TT owns the process lifetime and a
+    # detached daemon cannot be registered in the protected Child scope.
+    config["features"] = {"multi_agent": False, "daemon_auto_start": False}
     return config
 
 
@@ -1806,7 +1814,13 @@ def _verify_thinkthread_profile_models(
     codex_config_dir: Path | None = None,
 ) -> list[dict[str, str]]:
     """Read the exact TT model admission boundary without contacting a provider."""
-    inventory_root = Path(tempfile.mkdtemp(prefix="goal-plus-tt-model-list-"))
+    temporary_root = Path(
+        os.environ.get("GOAL_PLUS_TMPDIR") or Path.cwd() / ".tmp"
+    ).expanduser()
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    inventory_root = Path(
+        tempfile.mkdtemp(prefix="goal-plus-tt-model-list-", dir=temporary_root)
+    )
     try:
         profile = f"goal-plus-{native_agent}"
         models = _thinkthread_profile_models(

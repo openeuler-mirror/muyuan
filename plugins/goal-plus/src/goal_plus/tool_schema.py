@@ -76,8 +76,27 @@ def compact_tool_schema(
                 result.update(value, type=[value["type"], "null"])
         return result
 
-    return compress_schema(
+    compacted = compress_schema(
         compact(schema),
         prune_additional_properties=prune_additional_properties,
         prune_titles=True,
     )
+    if not prune_additional_properties:
+        return compacted
+
+    # ``true`` is JSON Schema's default and a string-only enum already constrains
+    # the instance type. Removing these redundant structural tokens keeps the
+    # registered MCP schema within Codex's compacted tool budget without
+    # changing validation semantics.
+    def prune_redundant(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        result = children(node, prune_redundant)
+        if result.get("additionalProperties") is True:
+            result.pop("additionalProperties")
+        enum = result.get("enum")
+        if result.get("type") == "string" and isinstance(enum, list) and enum and all(isinstance(value, str) for value in enum):
+            result.pop("type")
+        return result
+
+    return prune_redundant(compacted)

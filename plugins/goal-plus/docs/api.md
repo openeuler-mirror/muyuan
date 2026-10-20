@@ -7,7 +7,9 @@ Search 流程中的位置、调用方和所有权。
 Pi extension 的共同业务工具直接加载 MCP tools/list 的 description 与 inputSchema，调用
 通过标准 MCP stdio Client 进入同一服务，同一 runtime root 的调用复用连接，宿主 shutdown
 时关闭；Pi/TT 专属控制仍由宿主适配。宿主绑定的 candidate MCP
-只公开候选工具，并要求调用携带自身 agent_session_id；role 与绑定身份不是模型参数。
+只公开候选工具；当前候选的 `agent_session_id` 及 verifier 的 `run_id`、`candidate_id` 由宿主注入，
+模型不重复传入。role 与绑定身份不是模型参数；读取其他 Evidence 时的目标 candidate、iteration 和
+source 标识仍按各工具 schema 提供。
 Session 准备回执返回身份、工作区和选定模型，handle 不展开 metadata；完整 launch 输入留在持久 session 中，
 由可信宿主启动器读取。执行边界见 [Agent Host Adapters](agent-host-adapters.md)。
 
@@ -25,8 +27,9 @@ Codex Main 另提供只读 MCP resource `goal-plus://runtime/info`：无需 Goal
 读取当前注册工具的完整 `inputSchema` 与说明。名称不带 MCP namespace；查询不改变状态，
 不暴露当前角色未注册的工具，也不维护第二份 schema。
 
-工具 schema 用本地 `$defs/$ref` 复用重复结构，并合并等价的基础类型联合；不裁剪字段、
-约束或可选功能。`shared_dir` 由 Main 选择 `enabled`，按需覆盖工具数、发布版本数、文件数、
+工具 schema 用本地 `$defs/$ref` 复用重复结构，并合并等价的基础类型联合；不裁剪业务字段
+或可选功能。注册 schema 为控制体积会移除 `additionalProperties`，因此不能据 wire schema
+推断输入会放宽；运行时仍经严格 Pydantic 模型校验。`shared_dir` 由 Main 选择 `enabled`，按需覆盖工具数、发布版本数、文件数、
 路径条目数、深度和字节限额；省略时使用默认值。模型 provenance/context policy 和固定动作由 runtime 补齐。
 `strategy.models[]` 分配各模型席位；`worker_launch` 设置全局 model、reasoning_effort、
 service_tier 默认值，各席位的非空设置优先。
@@ -72,6 +75,27 @@ TT 的同请求 run 可通过准确调用日志接管原 Message，只观察与�
 见 [Codex 支持范围](codex.md#支持范围与验证)。
 TT interrupt/message 通过准确控制通道取得原生确认；确认超时不能声明执行已停止。
 恢复流程见 [Search 一致性恢复](search-recovery.md)，Main 控制合同见 [运行逻辑](runtime-logic.md)。
+
+`goal_plus_search_fork(run_id, checkpoint_id="latest_completed")` 保留为 Main 的共同
+fork façade，适用于 direct Codex/Pi 与 ThinkThread Codex/Pi。它和 fresh candidate
+都由 `start_agent_session(..., session_mode="fresh"|"fork")` 创建同一种 session
+identity、launch payload 与 continuation；MCP 工具集合不增加。FrozenSpec 必须选择
+`strategy.initial_context=fork`；Main 完成 freeze/create/plan/batch 和准备回合，
+在同一 Main session 的后续回合调用。Goal resume 只恢复执行许可，不选择派生模式。
+Host 决定原生 checkpoint kind，模型不传该字段。只有整组准确绑定
+后，才可通过原 `goal_plus_session_run` 执行；fork branch 的 `new_session=true` 复用已绑定
+分支，不创建替代 native context。后续 verifier/audit、selection、publication 和 Main apply
+继续走同一套工具。
+
+同组重放不重新派生。状态按 `prepared → submitted/unknown → started` 记录，prepared
+且尚未越过 provider fence 的 group 会继续启动；已有 submitted/unknown target 只允许
+receipt/journal recovery。receipt 已完整保存但 finalize 尚未完成时只做 bind/finalize，
+不会再次调用 provider。缺失 outcome 时返回 `ForkRecoveryIncomplete` 并保留 fence。Close 回执独立于不可变 launch receipt，所有
+started branches 关闭后 group 转为 closed。TT SDK 的 checkpoint 证明与真实验收边界见
+[Fork 支持范围](agent-host-adapters.md#fork-支持范围)。
+
+fresh/fork 的统一生命周期、模式差异和 receipt 恢复状态见
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)。
 
 ## 错误返回
 
@@ -271,7 +295,25 @@ identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，
 | `goal_plus_search_list_iterations` | 显式读取单个 candidate 可能很大的完整 verifier 历史 |
 | `goal_plus_monitor_snapshot` | 只读汇总 goal/run/session/host Evidence |
 
-`goal_plus_search_list_history` 默认返回 objective、候选排名、分数、key_metrics、Evidence 来源、
+所有 freeze 回执都返回 `frozen_spec_id`、`spec_hash`、`initial_context`、`adaptive_search` 和 `llm_validation`，
+供 Main 按同一接口核对评价版本与编排合同。
+
+`goal_plus_search_freeze_spec` 还可通过 `parent_frozen_spec_id` 和 `revision_reason` 保存不可变
+的 spec lineage。fork 父版本的分支 lineage 会自动继承，避免模型重新声明分支身份。
+这些字段只创建新的 FrozenSpec；已有 run 仍绑定原来的 `frozen_spec_id`，要执行修订合同必须把
+新回执交给 `goal_plus_search_create` 创建相应 run。顶层和 `spec` 内显式声明的
+`source_path/workspace` 必须一致，冲突返回 `ConflictingFreezeParameter`，不静默覆盖。
+
+Candidate 的窄修订使用 `goal_plus_search_revise_spec`，仅在固定并行/fork 工具目录
+开放。自身 `agent_session_id` 由宿主绑定，模型参数为 `request_id`、`parent_frozen_spec_id`、`revision_reason`
+与 `revision` patch；可改 objective、metric、candidate_acceptance、process/promotion verifier
+command/args 和 selection。冻结 verifier 文件字节、source、权限、预算、模型与工具能力继承
+父版本，不能借修订开启新的 verifier 能力。Pending attempt 固定版本，期间不允许再切换。
+同请求返回原版本，内容冲突或过期父版本拒绝；新的评价版本只切换自身 candidate 的后续执行。
+每轮 Evidence、settlement、audit 和 Annotation 保留实际版本及 hash；旧 results.tsv 保持原表头，
+结构化 Evidence 是版本来源。详见 [分支评价版本](shared-plane.md#分支评价版本)。
+
+`goal_plus_search_list_history` 默认返回 objective、候选排名、分数、按 verifier 命名空间组织的 `metrics`、Evidence 来源、
 变更文件、异常和一份当前 run 的研究汇总，足以分析当前进展。best 与 latest 验证结果不一致、
 latest 被回滚或失败时单独返回 `latest`；未验证的分数与验证结果保持 `null`。研究汇总仍包含
 排名之外候选的发现，`top_n` 只限制排名候选数。空研究不展开，存在 predecessor 研究时用
@@ -280,6 +322,11 @@ latest 被回滚或失败时单独返回 `latest`；未验证的分数与验证�
 的 verifier 证据和空研究块不再逐候选重复，agent_sessions 仅保留身份与时间（完整 handle 用
 `goal_plus_search_recovery_status` 的 detail 视图读取）；完整 iteration 仍通过
 `goal_plus_search_list_iterations` 读取。
+
+默认 history 不再重复返回扁平化的 `key_metrics`；完整 namespaced `metrics` 保留数组、分组、
+轮次及合法的零值和布尔值。`detail=true`、报告与持久化记录仍保留各自完整结构。
+iteration 回执的 Evidence 已含与外层严格相同的指标时，模型回复只保留回执内的一份，
+回执本身不裁剪；不相同时保留两层。
 
 `goal_plus_search_invalidate_run` 需要 typed verifier reason、非空 summary 和具体 Evidence。它把 run 置为
 `aborted`，拒绝新的 planning、session、verifier record、selection 和 promotion。runtime 不拥有 host
@@ -337,19 +384,20 @@ Freeze 从已授权 Main session 固定 `agent_harness=codex|pi`，由装配层�
 Session 的 `agent_harness`、`runtime_provider` 必须与 `session_handle` 及冻结绑定一致。
 角色 profile 同样保存这两个字段、model/reasoning/timeout 和
 `configuration_source="host_process"`；服务认证、endpoint 和宿主配置路径不进入 SearchSpec。
-Candidate/Annotation 使用冻结绑定；LLM Verifier、delegation 和 final checker 使用直接执行路径。
+Candidate/Annotation 使用冻结绑定；LLM Verifier 使用冻结 runtime provider 对应的执行路径，
+delegation 和 final checker 使用直接执行路径。
 最终检查使用 `checker_harness`。模型侧使用 run/wait/message/interrupt/stop/close 六个 session 工具。
 
 旧 `native_host`、`worker_host`、`host_handle`、`workspace.backend` 等字段不提供 alias。
 旧 build 负责关闭活动资源并收尾旧记录，新 build 创建新记录，不能手工补写 `.gp` 身份。
 新字段由可信接线补齐；自然语言启动不增加必填参数。
 
-An `adaptive_search` run requires `strategy.allocation`, explicit `strategy.verifier`
-and a Git worktree. `strategy.verifier.scores` selects independently registered metric
-keys (UCT requires `progress_reward` and `allocation_utility`). Outside Adaptive
-Search, `verifier: {}` enables quality assessment; extra metrics may be selected without
-allocation. Including `quality_score` in selection also enables basic quality assessment.
-An adaptive run
+An `adaptive_search` policy requires `strategy.adaptive_search` with at least an
+`allocation` or `steering` policy. The policy may run with a Git worktree or ThinkThread;
+its required score keys are merged into `strategy.verifier` automatically. UCT requires
+`progress_reward` and `allocation_utility`. Outside Adaptive Search, `verifier: {}` enables
+quality assessment; extra metrics may be selected without allocation. Including `quality_score`
+in selection also enables basic quality assessment. An adaptive run
 still has one initial plan, but may replace a retired lane through persisted
 runtime decisions. `budget.max_parallel` is the live candidate limit; optional
 `budget.max_candidates` limits cumulative unique candidates, while `null` is
@@ -397,7 +445,7 @@ pitfalls，但 predecessor score 会明确标记为不可复用。
 | `goal_plus_search_plan_next` | 持久化唯一一次初始 candidate 分配 |
 | `goal_plus_search_start_batch` | 执行 workspace_provider bootstrap gate，物化 candidate，并返回 candidate ID、provider 和选定模型 |
 
-两种 orchestration mode 都只有一次初始分配。`parallel_loops` 中
+固定并行和 Adaptive Search 都只有一次初始分配。固定并行中
 `goal_plus_search_plan_next(requested_k)` 的数量为：
 
 ```text
@@ -405,8 +453,8 @@ min(requested_k, remaining max_parallel)
 ```
 
 标准流程传入 `requested_k=budget.max_parallel`。`budget.max_parallel`
-同时决定初始 candidate 数和活跃 worker 数。`parallel_loops` 后续只继续既有 candidate；
-`adaptive_search` 的替换另经持久 AllocationDecision。
+同时决定初始 candidate 数和活跃 worker 数。固定并行后续只继续既有 candidate；
+Adaptive Search 的替换另经持久 AllocationDecision。
 
 `goal_plus_search_start_batch` 首次成功调用会固定该 plan 的批次。需要两个候选时，在同一次调用的
 `proposals` 列表中提供两个 proposal；后续同 plan 调用只返回已有 candidate，不追加或替换，
@@ -454,12 +502,12 @@ context/provenance 绑定，不代表进程存活；完整 launch 与准确 hand
 `result_ledger_source="gp"` 保留准确 provenance。`workspace_ledger_projection` 返回 binding 的
 `none` 或 `results_tsv`；只有后者的 `results_tsv` 才是路径，否则为 `null`。`inner_agent` 返回
 frozen logical adapter ID；它不会暴露 host-native role。持久化的完整 `CandidateTask` 只投影为
-工作所需字段；model、directive、orchestration mode 和 run budget 不重复下发。ThinkThread
+工作所需字段；model、directive、initial context 和 run budget 不重复下发。ThinkThread
 candidate 只额外返回受限的 logical workspace access，不暴露 Root 本地路径。只有确实需要旧
 verifier 细节时才调用 `goal_plus_search_list_iterations`。
 
-Git 与 ThinkThread outer provider 都支持 `inner_agent="autoresearch"` 和
-`inner_agent="common"`。兼容 ID `autoresearch` 解析为 AutoResearch-Git：前者在一个 dispatch
+Direct Git 和 Pi ThinkThread 支持 `inner_agent="autoresearch"` / `"common"`；
+Codex ThinkThread 仅支持 common。兼容 ID `autoresearch` 解析为 AutoResearch-Git：前者在一个 dispatch
 或一组 retained TT wakes 中自主执行多轮，并由 trusted adapter 维护 private attempt commits 与
 `results.tsv`；后者完成一个有界 attempt 后返回，不启用 inner Git ledger mechanics。两者都由
 runtime 在 verifier 边界创建 authoritative outer checkpoint，worker 不需要也不得主动 commit。
@@ -469,11 +517,19 @@ runtime 在 verifier 边界创建 authoritative outer checkpoint，worker 不需
 `supplemental_available=true`；完整 summary、dimensions、peer comparisons 和 limitations
 通过 `goal_plus_search_get_evidence_detail` 按 immutable row 获取。关闭时不暴露该能力。
 
-Codex MCP 对 context、Global Evidence、detail 和完整 iteration history 使用单个紧凑
-`TextContent`，避免同时把同一 JSON 放入 `content` 和 `structuredContent`。Pi-local facade
-保留结构化 `details`，给模型的文本同样使用紧凑 JSON。
+Goal Plus 的 MCP 工具成功回包由共同服务端统一编码：`content` 只含一个紧凑 JSON
+`TextContent`，不附带 `structuredContent`，工具目录也不声明 `outputSchema`。消费者对
+`content[0].text` 做 JSON 解析；业务对象和列表的字段、类型和值保持不变，包括空列表。
+此合同覆盖 direct 与 ThinkThread 的 Main、candidate 和内部角色，原有角色与身份校验保持。
+错误仍通过 MCP `isError` 和诊断文本返回，不能按成功 JSON 解码。Pi-local facade 在解析
+MCP 业务结果后继续提供结构化 `details`。
 
 ### Evidence 与按需详情
+
+TT candidate Reference 尚未支持：工具目录隐藏 reference_open，调用返回 ReferenceUnavailable；
+Annotation 的 Artifact View 不授予 candidate Reference 能力。TT Shared Tool/shared_dir 尚无
+物化能力，freeze 拒绝启用。完整[宿主支持范围](agent-host-adapters.md#fork-支持范围)
+同时约束工具目录和实际调用，context reload 不能扩大权限。
 
 | 工具 | 调用方 | 用途 |
 | ---------------------------- | ---------------- | ---------------------------------------------- |
@@ -496,7 +552,12 @@ workspace。runtime 不要求 worker 关闭 reference；目录随 run state 保�
 `strategy.global_evidence_mode` 决定 candidate 如何收到 Evidence：
 
 - `manual`：默认模式，由 candidate 显式读取共享 run view；
-- `auto`：除显式读取外，每次成功的 worker process verifier 后注入 `global_evidence_snapshot`；
+- `auto`：除显式读取外，每次成功的 worker process verifier 后注入
+  `global_evidence_snapshot`。首次注入为完整快照，后续通过
+  `global_evidence_update` 返回 `delivery=delta` 或 `delivery=unchanged`，其中包含
+  `snapshot_id`、`base_snapshot_id`、`added`、`changed` 和 `removed`；旧的
+  `global_evidence_snapshot` 字段继续保留，但在增量响应中只包含新增/变更条目。
+  无法读取基线时自动回退为完整快照；
 - `independent`：不自动注入，显式读取也只返回当前 candidate 自己的 Evidence。
 
 parent/promotion verification 不进入 peer Evidence。快照失败只增加
@@ -555,6 +616,14 @@ verifier/provider execution error 同样写失败 iteration。执行结果未知
 本地 attempt 可用同一工具传 `attempt_id` 和 `retry=true` 恢复：复用已完成结果或重验提交快照，
 幂等结算并保留当前 workspace。仍在执行时拒绝重复启动；记录不足时明确报错，由 Main 决定
 是否恢复 checkpoint。ThinkThread 仍由 retained attempt owner 恢复，不使用本地 retry 参数。
+
+模型可见 verifier 反馈只在 `stdout_tail` 是完整 JSON 对象、且每个字段与同层 metrics
+类型和值均相同时省略该重复尾部。混合文本、截断或冲突数据、stderr、错误、返回码和日志路径
+保留；原始日志、Evidence 和回执不改写。关闭 `shared_dir` 时，verifier 和 iteration 回复省略
+已知为空的共享工具字段；异常非空值仍可见，其他指标的 `0` / `false` 不受影响。
+
+Candidate 的 verifier schema 只公开 `scope="process"`；关闭 shared-dir 时也不公开
+`toolization_decision`，实际调用按同一边界拒绝。Main 保留 promotion 权限。
 
 启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged`
 需要工具名和至少一个正向 signal，`not_applicable`
@@ -637,13 +706,17 @@ generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operat
 
 ## Selection、Promotion 与 Report
 
-- `goal_plus_search_select`：按 ranking 恢复 immutable artifact，并选择通过 final verifier 的状态。
+- `goal_plus_search_select(run_id, frozen_spec_id?)`：在指定评价版本内按 ranking 选择精确 artifact。
 - `goal_plus_search_promote`：运行 promotion gate，并准备 provider-native publication。
 - `goal_plus_search_apply_promotion`：将 publication 显式写回原 Git repo 或 ThinkThread Root。
-- `goal_plus_search_report`：生成最终 `report.md` 和 self-contained `report.html`。
+- `goal_plus_search_report`：生成最终 `report.md`、self-contained `report.html` 和离线交付包
+  `report-bundle.zip`，回执分别返回 `report_path`、`html_report_path`、`bundle_path`。
 
 `goal_plus_search_select` 基于 verifier-backed immutable revision。promotion 是独立验收，不复用 process
-pass；失败时 run 保持可重试，且不输出 patch。
+pass；失败时 run 保持可重试，且不输出 patch。省略版本只选择 run 初始合同，不跨不同版本比较
+scalar。Main 审查修订后显式选择新版本，选定 `selected_frozen_spec_id` 随 artifact 持久化，
+promotion/publication verifier 使用该版本。可信宿主在 select 前经共同 scope owner fence 并
+关闭 candidate 资源；内部评估队列保持原收尾合同，Runtime 不监督 worker。
 
 新 Git run 会完整 mirror 原 repository 和历史，并保留 candidate 的全部 running commits。
 `goal_plus_search_promote` 另行合成一个以 source baseline 为 parent 的 squash publication commit；
@@ -694,7 +767,9 @@ best-so-far；没有 Plotly 时使用确定性的内联 SVG fallback。
 
 报告只绘制持久状态中真实存在的数据，不从 prose 猜测 search-space
 coordinate、embedding 或缺失 metric。HTML 内联 CSS/JavaScript，可直接打开；`report.md`
-是稳定文本产物。详细生成和恢复方法见[调试运行时状态](debugging-runtime.md)。
+是稳定文本产物。交付包保留已有会话导出及 runtime 中已生成的各 run 报告，解压后打开
+顶层 `index.html`；未采集的历史不会在打包时补造。详细生成和恢复方法见
+[调试运行时状态](debugging-runtime.md#离线可视化交付包)。
 
 ## Pi 宿主接线
 
@@ -709,7 +784,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-Pi extension 还内部调用 `host_execution_scope_open`、`host_execution_scope_close_run`、
+Pi extension 还内部调用 `host_execution_scope_open`、
 `host_execution_scope_close` 和 `host_execution_scope_snapshot`，把 session、worker process 与
 Annotation 绑定到 main owner。它们是 host adapter 控制面，不注册为模型可见工具；
 `execution_scope_id` 也不会出现在模型可见的工具 schema 中。

@@ -20,6 +20,25 @@ For a Goal Plus command containing `workspace_provider=thinkthread`, confirm the
 alone does not establish the active provider. For an explicit environment request without a
 running Goal, use the intended host and binding as the preparation target; do not invent a Goal.
 
+For a real-host test, treat the host preflight as part of the evidence. Pytest system tests are
+opt-in: a test reported as `skipped` because `--run-system-tests` was omitted has not run. Use
+`uv run pytest -n 0 --run-system-tests ...` for the maintained ST entrypoints and keep the exact
+model/provider value in the command and report.
+
+Pi and ThinkThread require the exact `provider/model` spelling accepted by the selected Profile;
+for the current Sub2API-backed Pi setup this is `sub2api-openai/gpt-6-luna`, not the bare
+`gpt-6-luna`. A bare model fails in `tt run` before Root startup. Clear a stale inherited
+`PI_CODING_AGENT_DIR` when it points at a missing or cross-checkout symlink, so the managed
+Profile can use its declared `configDirDefault`; a Pi error about the config directory being
+unreal or missing is a host configuration failure, not a Goal Plus or provider failure.
+
+When a Goal Plus TT Child starts, the extension may request `host_mcp_manifest` before the
+dispatch message has bound a candidate identity. That request is schema discovery and may use
+the existing schema-only unbound identity. Actual candidate tool calls still require the exact
+candidate session identity. A manifest succeeds while an unbound tool call returns
+`GoalPlusSessionMismatch` by design; do not weaken the latter gate or classify this pair as a
+provider failure.
+
 ## Choose the entry
 
 | Intent or current state | Start here | Expected result |

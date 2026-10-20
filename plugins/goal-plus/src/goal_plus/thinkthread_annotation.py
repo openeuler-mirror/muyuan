@@ -584,6 +584,8 @@ def _spawn(
     state: dict[str, Any] = {
         "schema_version": 1,
         "run_id": run_id,
+        "agent_harness": frozen.agent_harness,
+        "role": "annotator",
         "root_thinkthread_id": root_view.get("thinkthreadId"),
         "agent_session_id": f"annotator-{run_id}",
         "status": "starting",
@@ -1133,8 +1135,10 @@ def close_thinkthread_annotation(
                             raise
             if isinstance(child_id, str) and child is not None:
                 from goal_plus.infrastructure.session_diagnostics import collect_child_diagnostics
+                from goal_plus.infrastructure.agent_transcript import debug_export_child_transcript
 
                 collect_child_diagnostics(root_dir, state, sdk)
+                debug_export_child_transcript(root_dir, state)
                 state["close_intent"]["state"] = "destroying_child"
                 _write_state(root_dir, state)
                 ChildDriver(sdk, SystemClock()).destroy(child_id)

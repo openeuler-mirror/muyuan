@@ -33,6 +33,8 @@ def _identity(binding):
     identity = {key: binding.get(key) for key in (
         "root_thinkthread_id", "thinkthread_id", "agent_session_id", "run_id", "candidate_id",
     )}
+    if binding.get("role") in {"annotator", "verifier"}:
+        identity["role"] = binding["role"]
     if binding.get("role") == "verifier":
         identity.update({key: binding.get(key) for key in (
             "role", "task_id", "iteration", "attempt", "settlement_id", "invocation_id",
@@ -42,11 +44,14 @@ def _identity(binding):
 
 def _index(directory, binding):
     path = directory / "index.json"
+    harness = binding.get("agent_harness", "pi")
+    if harness not in {"codex", "pi"}:
+        raise ValueError("unsupported diagnostic harness")
     index = load_json(path) if path.exists() else {
-        "version": 1, "source": "thinkthread_messages", "stream_type": "session_transcript", "agent_harness": "pi",
+        "version": 1, "source": "thinkthread_messages", "stream_type": "session_transcript", "agent_harness": harness,
         "identity": _identity(binding), "batches": {}, "pending_batches": {}, "status": "unavailable",
     }
-    if index["identity"] != _identity(binding):
+    if index["identity"] != _identity(binding) or index.get("agent_harness") != harness:
         raise PermissionError("diagnostic archive binding mismatch")
     return index
 

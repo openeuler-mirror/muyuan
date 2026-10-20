@@ -111,6 +111,7 @@ from goal_plus.domain.promotion import (
 )
 from goal_plus.domain.search import (
     AgentSessionRecord as AgentSessionRecord,
+    AdaptiveSearchOptions as AdaptiveSearchOptions,
     BootstrapVerification as BootstrapVerification,
     BootstrapVerifierResult as BootstrapVerifierResult,
     Budget as Budget,
@@ -125,6 +126,9 @@ from goal_plus.domain.search import (
     EditSurface as EditSurface,
     FeedbackPolicy as FeedbackPolicy,
     FrozenSpec as FrozenSpec,
+    CandidateOrigin as CandidateOrigin,
+    DispatchGroupState as DispatchGroupState,
+    DispatchTargetState as DispatchTargetState,
     RunState as RunState,
     RunSummary as RunSummary,
     SearchPlan as SearchPlan,
@@ -141,6 +145,7 @@ from goal_plus.domain.selection import (
     SelectionSpec as SelectionSpec,
 )
 from goal_plus.domain.verifier import (
+    DispatchAuditContext as DispatchAuditContext,
     VerifierRecord as VerifierRecord,
     VerifierScoreContract as VerifierScoreContract,
     VerifierScoreRule as VerifierScoreRule,

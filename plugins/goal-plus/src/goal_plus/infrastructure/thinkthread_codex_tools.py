@@ -1,13 +1,21 @@
 """Codex Child MCP transport to its authenticated Parent's candidate tools."""
 
-from typing import Any
-from threading import Lock
-from pathlib import Path
 import hashlib
 import os
+from pathlib import Path
+from threading import Lock
+from typing import Any
 
+from pydantic import ValidationError
+
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
+from goal_plus.mcp_output import json_tool
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
-from goal_plus.thinkthread_agent_posix import AgentPosixSdkClient, validate_thinkthread_root
+from goal_plus.thinkthread_agent_posix import (
+    AgentPosixBridgeError,
+    AgentPosixSdkClient,
+    validate_thinkthread_root,
+)
 
 # The wire request allows 120 seconds; reserve ten more for SDK startup and binding.
 WORKER_BRIDGE_TIMEOUT_SECONDS = 130.0
@@ -17,14 +25,14 @@ WORKER_BRIDGE_TIMEOUT_SECONDS = 130.0
 # instructions are the only channel that tells the model it runs inside a
 # ThinkThread Root and which execution identity it must declare.
 THINKTHREAD_MAIN_INSTRUCTIONS = (
-    "本 MCP 由宿主在 ThinkThread Root 内启动。用户在 Root 给出的目标一律先经 "
-    "goal_plus_host_start 启动（Root 内无 $goal-plus 命令、Stop-hook 续跑与 resume 入口）。"
-    "准备 Search 时：goal_plus_list_models 与冻结一律使用 "
+    "本 MCP 在 ThinkThread Root 内运行。用户目标先经 goal_plus_host_start 启动；"
+    "Root 无 $goal-plus 命令或 Stop-hook 续跑。goal_plus_host_resume 显式恢复暂停的 Goal；"
+    "fork 选择已完成准备回合的 checkpoint。goal_plus_list_models 与冻结使用 "
     'agent_harness="codex"、runtime_provider="thinkthread"，SearchSpec 必须 '
     'workspace.provider="thinkthread"；strategy.models 仅可引用 list_models 返回的精确模型，'
     "省略 reasoning_effort 与 service_tier。候选由宿主经 Message 协议分发与回收，"
-    "候选中断后宿主按已 settle 快照重派。Goal 终结后调用 goal_plus_host_close_scopes "
-    "关闭其 execution scope 完成资源清理（Root 内无 Stop-hook 自动回收）。"
+    "普通候选中断后可按已 settle 快照重派；fork 保留准确原生分支。Goal 终结后调用 goal_plus_host_close_scopes "
+    "关闭 execution scope 清理资源。"
 )
 
 
@@ -49,11 +57,12 @@ def create_thinkthread_main_mcp(root_dir: str | Path = DEFAULT_RUNTIME_ROOT):
 def _register_thinkthread_main_host_tools(mcp, root: Path) -> None:
     """Attach the TT Main host entrypoints; never registered outside a Root."""
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_host_start(raw_goal: str) -> dict[str, Any]:
         """在 ThinkThread Root 内启动 Goal 的唯一宿主入口。
 
-        Root 内没有 `$goal-plus` 命令、Stop-hook 续跑或 resume 入口；用户在 Root
+        Root 内没有 `$goal-plus` 命令或 Stop-hook 自动续跑；用户在 Root
         给出的目标必须先经本工具启动，将用户目标原文（含 `mode=`、`max_parallel=` 等
         配置前缀）逐字作为 `raw_goal` 传入。启动后按 goal_plus_status 的 next_action
         继续；同一 Root session 已持有未终结 Goal 时本调用失败，应继续既有 Goal 而不是
@@ -105,7 +114,41 @@ def _register_thinkthread_main_host_tools(mcp, root: Path) -> None:
             "command_config": record.command_config.model_dump(mode="json", exclude_none=True),
         }
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
+    def goal_plus_host_resume(goal_plus_id: str) -> dict[str, Any]:
+        """显式恢复同一 Main 持有的 Goal 的执行许可，保留 revision、预算与 deadline。
+
+        本工具不选择 fresh/fork、不创建 candidate，也不自动重发候选调用。
+        使用 fork 时，可在准备结束并 blocked 后恢复 Goal，再显式 fork
+        latest_completed；checkpoint 的选择属于 fork 操作。
+        """
+        from datetime import datetime, timezone
+
+        from goal_plus.goal_plus import FileGoalPlusRuntime
+        from goal_plus.server import native_mcp_caller
+
+        caller = native_mcp_caller()
+        runtime = FileGoalPlusRuntime(root)
+        record = runtime.authorization.require_main_goal_session(
+            goal_plus_id, agent_harness="codex", session_id=caller, execution=False,
+        )
+        if record.active_session.state in {"detached", "stale"}:
+            raise PermissionError("ThinkThread Main must retain its owning native session")
+        if record.status == "active" and record.control.state == "active":
+            return {"goal_plus_id": goal_plus_id, "goal_revision": record.goal_revision, "status": record.status}
+        identity = "\0".join((caller, goal_plus_id, str(record.goal_revision), str(record.control.version), record.updated_at))
+        record = runtime.control_from_host_command(goal_plus_id, invocation={
+            "agent_harness": "codex", "transport": "codex_user_prompt_submit",
+            "command": "$goal-plus", "action": "resume", "session_id": caller,
+            "invocation_id": "codex-tt-resume:" + hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            "raw_input_sha256": hashlib.sha256(b"resume").hexdigest(),
+            "invoked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        })
+        return {"goal_plus_id": goal_plus_id, "goal_revision": record.goal_revision, "status": record.status}
+
+    @mcp.add_tool
+    @json_tool
     def goal_plus_host_close_scopes(goal_plus_id: str) -> dict[str, Any]:
         """Goal 终结后关闭其全部宿主 execution scope 的唯一入口。
 
@@ -161,15 +204,45 @@ def _worker_bridge_transport() -> AgentPosixSdkClient:
     )
 
 
-def _child_binding(transport: AgentPosixSdkClient) -> tuple[str, str | None]:
+def _worker_tool_call(
+    transport: AgentPosixSdkClient,
+    session_id: str,
+    name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any] | list[dict[str, Any]]:
+    envelope = transport.invoke("call", {
+        "agent_session_id": session_id, "name": name, "arguments": arguments,
+    }, timeout_seconds=WORKER_BRIDGE_TIMEOUT_SECONDS)
+    if "toolResult" not in envelope:
+        raise AgentPosixBridgeError("ThinkThread worker bridge omitted toolResult")
+    result = envelope["toolResult"]
+    if name in {
+        "goal_plus_thinkthread_artifact_view_list",
+        "goal_plus_thinkthread_artifact_view_diff",
+    }:
+        if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
+            raise AgentPosixBridgeError("ThinkThread worker bridge returned invalid Artifact View entries")
+    elif not isinstance(result, dict):
+        raise AgentPosixBridgeError("ThinkThread worker bridge returned an invalid tool result object")
+    return result
+
+
+def _child_binding(transport: AgentPosixSdkClient) -> tuple[str, str | None, CandidateToolCapabilities | None]:
     binding = transport.invoke("binding")
     session_id = binding.get("agentSessionId")
     if not isinstance(session_id, str) or not session_id:
         raise PermissionError("ThinkThread Child has no session binding")
-    return session_id, binding.get("thinkthreadRole")
+    role = binding.get("thinkthreadRole")
+    capabilities = None
+    if role in (None, "candidate"):
+        try:
+            capabilities = CandidateToolCapabilities.model_validate(binding.get("candidateCapabilities"))
+        except ValidationError as exc:
+            raise PermissionError("ThinkThread Child has invalid frozen candidate capabilities") from exc
+    return session_id, role, capabilities
 
 
-def _child_mcp(transport: AgentPosixSdkClient, session_id: str):
+def _child_mcp(transport: AgentPosixSdkClient, session_id: str, capabilities: CandidateToolCapabilities):
     from goal_plus.server import create_mcp, native_mcp_caller
 
     native_thread: str | None = None
@@ -182,12 +255,10 @@ def _child_mcp(transport: AgentPosixSdkClient, session_id: str):
             if native_thread is not None and caller != native_thread:
                 raise PermissionError("ThinkThread MCP native thread changed")
             native_thread = caller
-        return transport.invoke("call", {
-            "agent_session_id": session_id, "name": name, "arguments": arguments,
-        }, timeout_seconds=WORKER_BRIDGE_TIMEOUT_SECONDS)
+        return _worker_tool_call(transport, session_id, name, arguments)
 
     return create_mcp(caller_role="candidate", caller_agent_session_id=session_id,
-                      candidate_tool_call=call)
+                      candidate_tool_call=call, candidate_capabilities=capabilities)
 
 
 def create_thinkthread_candidate_mcp():
@@ -199,18 +270,19 @@ def create_thinkthread_candidate_mcp():
     """
 
     transport = _worker_bridge_transport()
-    session_id, role = _child_binding(transport)
+    session_id, role, capabilities = _child_binding(transport)
     if role == "annotator":
         return _annotator_mcp(transport, session_id)
     if role == "verifier":
         return _verifier_mcp(transport, session_id)
     if role not in (None, "candidate"):
         raise PermissionError(f"ThinkThread Child has an unknown dispatch role: {role}")
-    return _child_mcp(transport, session_id)
+    return _child_mcp(transport, session_id, capabilities)
 
 
 def _verifier_mcp(transport: AgentPosixSdkClient, session_id: str):
     from fastmcp import FastMCP
+
     from goal_plus._version import __version__
     from goal_plus.server import native_mcp_caller
 
@@ -224,21 +296,21 @@ def _verifier_mcp(transport: AgentPosixSdkClient, session_id: str):
             if native_thread is not None and native_thread != caller:
                 raise PermissionError("ThinkThread MCP native thread changed")
             native_thread = caller
-        return transport.invoke("call", {
-            "agent_session_id": session_id, "name": name, "arguments": arguments,
-        }, timeout_seconds=WORKER_BRIDGE_TIMEOUT_SECONDS)
+        return _worker_tool_call(transport, session_id, name, arguments)
 
     mcp = FastMCP("goal-plus", version=__version__, instructions=(
         "Read this assessment with goal_plus_thinkthread_verifier_input, then submit its complete "
         "result with goal_plus_thinkthread_verifier_submit and end the turn. No other tools are permitted."
     ))
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_verifier_input() -> dict[str, Any]:
         """Read this assessment's fixed instructions, evidence and output schema."""
         return call("goal_plus_thinkthread_verifier_input", {})
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_verifier_submit(result: dict[str, Any]) -> dict[str, Any]:
         """Submit the complete result matching this assessment's output schema."""
         return call("goal_plus_thinkthread_verifier_submit", {"result": result})
@@ -259,7 +331,8 @@ THINKTHREAD_ANNOTATOR_INSTRUCTIONS = (
 
 
 def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
-    from typing import Annotated, Any as TypingAny
+    from typing import Annotated
+    from typing import Any as TypingAny
 
     from fastmcp import FastMCP
     from pydantic import Field
@@ -278,13 +351,12 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
             if native_thread is not None and caller != native_thread:
                 raise PermissionError("ThinkThread MCP native thread changed")
             native_thread = caller
-        return transport.invoke("call", {
-            "agent_session_id": session_id, "name": name, "arguments": arguments,
-        }, timeout_seconds=WORKER_BRIDGE_TIMEOUT_SECONDS)
+        return _worker_tool_call(transport, session_id, name, arguments)
 
     mcp = FastMCP("goal-plus", version=__version__, instructions=THINKTHREAD_ANNOTATOR_INSTRUCTIONS)
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_annotation_next() -> dict[str, Any]:
         """领取下一个 fenced immutable Evidence annotation task。
 
@@ -294,8 +366,9 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
         """
         return call("goal_plus_thinkthread_annotation_next", {})
 
-    @mcp.tool()
-    def goal_plus_thinkthread_artifact_view_list(view_id: str, path: str = ".") -> dict[str, Any]:
+    @mcp.add_tool
+    @json_tool
+    def goal_plus_thinkthread_artifact_view_list(view_id: str, path: str = ".") -> list[dict[str, Any]]:
         """列出授权 immutable Artifact View 的目录内容。
 
         view_id 必须逐字使用 annotation_next 返回的 artifact_views[].view_id；
@@ -303,7 +376,8 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
         """
         return call("goal_plus_thinkthread_artifact_view_list", {"view_id": view_id, "path": path})
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_artifact_view_stat(view_id: str, path: str = ".") -> dict[str, Any]:
         """读取授权 Artifact View 中路径的元数据（类型、大小、哈希）。
 
@@ -311,7 +385,8 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
         """
         return call("goal_plus_thinkthread_artifact_view_stat", {"view_id": view_id, "path": path})
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_artifact_view_pread(
         view_id: str, path: str, offset: int = 0, length: int = 64 * 1024,
     ) -> dict[str, Any]:
@@ -324,8 +399,9 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
             {"view_id": view_id, "path": path, "offset": offset, "length": length},
         )
 
-    @mcp.tool()
-    def goal_plus_thinkthread_artifact_view_diff(base_view_id: str, target_view_id: str) -> dict[str, Any]:
+    @mcp.add_tool
+    @json_tool
+    def goal_plus_thinkthread_artifact_view_diff(base_view_id: str, target_view_id: str) -> list[dict[str, Any]]:
         """读取两个授权 Artifact View 之间的受控 diff（peer 比较基线）。
 
         两个参数都必须逐字使用 annotation_next 返回的 view_id；不得传入
@@ -336,7 +412,8 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
             {"base_view_id": base_view_id, "target_view_id": target_view_id},
         )
 
-    @mcp.tool()
+    @mcp.add_tool
+    @json_tool
     def goal_plus_thinkthread_annotation_submit(
         description: Annotated[str, Field(min_length=1, max_length=1000)],
         supplemental_evaluation: SupplementalEvaluation | None = None,
@@ -361,7 +438,7 @@ def create_thinkthread_annotator_mcp():
     """Serve an Annotation Child; its dispatch binding must declare the role."""
 
     transport = _worker_bridge_transport()
-    session_id, role = _child_binding(transport)
+    session_id, role, _ = _child_binding(transport)
     if role != "annotator":
         raise PermissionError("ThinkThread annotator MCP requires its annotator dispatch binding")
     return _annotator_mcp(transport, session_id)

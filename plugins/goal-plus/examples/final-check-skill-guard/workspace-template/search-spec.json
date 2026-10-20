@@ -32,7 +32,7 @@
   ],
   "strategy": {
     "name": "agent_guided",
-    "orchestration_mode": "parallel_loops",
+    "initial_context": "fresh",
     "worker_budget": {
       "max_runtime_seconds": 90,
       "max_turns": 6

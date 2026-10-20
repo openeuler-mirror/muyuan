@@ -39,8 +39,7 @@ def test_backend_scenario_harness_uses_actual_host_controls(tmp_path, monkeypatc
     def receive(client, root, record, *, persist):
         if "attempt_request" not in record:
             dispatch_worker_tool(root, record, "goal_plus_search_run_verifier", {
-                "run_id": run_id, "candidate_id": record["candidate_id"],
-                "agent_session_id": record["agent_session_id"], "hypothesis": "One exact edit",
+                "hypothesis": "One exact edit",
             }, request_id=f"req-{record['candidate_id']}-{record['dispatch_index']}")
             persist()
         sdk.finish(record["thinkthread_id"])
@@ -61,31 +60,33 @@ def test_backend_scenario_harness_uses_actual_host_controls(tmp_path, monkeypatc
     assert sdk.children == []
 
 
-@pytest.mark.parametrize("rollback,reconnect", [
-    (False, False), (True, False), (False, True), (True, True),
-    (False, "active"), (True, "active"), ("reset_unknown", False), ("missing_attempt", False),
-    (False, "stop"), (False, "stop_active"),
+@pytest.mark.parametrize("rollback,reconnect,agent_harness", [
+    (False, False, "pi"), (True, False, "pi"), (False, True, "pi"), (True, True, "pi"),
+    (False, "active", "pi"), (True, "active", "pi"),
+    ("reset_unknown", False, "pi"), ("missing_attempt", False, "pi"),
+    (False, "stop", "pi"), (False, "stop_active", "pi"),
+    (False, "select_active", "pi"), (False, "select_active", "codex"),
 ])
-def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, monkeypatch, rollback, reconnect):
+def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, monkeypatch, rollback, reconnect, agent_harness):
     monkeypatch.chdir(tmp_path)
     project = make_project(tmp_path)
-    sdk = IntegratedAgentPosix(project)
+    sdk = IntegratedAgentPosix(project, agent=agent_harness)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: sdk)
     monkeypatch.setattr("goal_plus.infrastructure.thinkthread_sessions.AgentPosixSdkClient", lambda: sdk)
     monkeypatch.setattr("goal_plus.thinkthread_annotation.AgentPosixSdkClient", lambda: sdk)
     root = tmp_path.parent / (tmp_path.name + "-session-runtime")
-    goal = start_host_verified_goal(root, project, agent_harness="pi")
+    goal = start_host_verified_goal(root, project, agent_harness=agent_harness)
     runtime = FileSearchRuntime(root)
     spec = thinkthread_spec(project)
     spec.strategy.inner_agent = "common"
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness=agent_harness)
     run_id = runtime.create_run(frozen.frozen_spec_id)
     FileGoalPlusRuntime(root).link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     session = runtime.start_agent_session(run_id, task.candidate_id)
     scope = ensure_execution_scope(
-        root_dir=root, agent_harness="pi", owner_session_id=goal.active_session.session_id,
+        root_dir=root, agent_harness=agent_harness, owner_session_id=goal.active_session.session_id,
          run_id=run_id,
         activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
     )
@@ -95,7 +96,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
         allow_completion.set()
 
     def receive(client, root_dir, record, *, persist):
-        if reconnect == "stop_active" and record["call_request"]["call_id"] == "stop-probe":
+        if reconnect in {"stop_active", "select_active"} and record["call_request"]["call_id"] == "stop-probe":
             accepted_inflight.set()
             return
         if rollback == "missing_attempt":
@@ -103,16 +104,15 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
             return
         if "attempt_request" not in record:
             accepted = dispatch_worker_tool(root_dir, record, "goal_plus_search_run_verifier", {
-                "run_id": run_id, "candidate_id": task.candidate_id,
-                "agent_session_id": session.agent_session_id, "hypothesis": "One exact change",
+                "hypothesis": "One exact change",
             }, request_id=f"req-{record['dispatch_index']}")
             assert accepted["state"] == "accepted"
             queried = dispatch_worker_tool(root_dir, record, "goal_plus_search_run_verifier", {
-                "run_id": run_id, "candidate_id": task.candidate_id,
-                "agent_session_id": session.agent_session_id, "attempt_id": accepted["attempt_id"],
+                "attempt_id": accepted["attempt_id"],
                 "timeout_seconds": 0,
             }, request_id=f"query-{record['dispatch_index']}")
-            assert queried == accepted == record["attempt_request"]
+            assert queried == accepted
+            assert record["attempt_request"]["attempt_id"] == accepted["attempt_id"]
             assert len(runtime.list_iterations(run_id, task.candidate_id)) == (
                 record["dispatch_index"] - (2 if reconnect == "stop_active" and record["dispatch_index"] > 1 else 1)
             )
@@ -120,6 +120,9 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
             accepted_inflight.set()
         if allow_completion.is_set():
             sdk.finish(record["thinkthread_id"])
+            if agent_harness == "codex":
+                # Codex keeps its process alive between completed Message turns.
+                sdk.child(record["thinkthread_id"])["executionState"] = "running"
 
     monkeypatch.setattr("goal_plus.infrastructure.thinkthread_sessions.receive_worker_messages", receive)
     hosts = []
@@ -130,7 +133,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
         return agent_harness
 
     monkeypatch.setattr("goal_plus.session_host.NativeCandidateHost", host_factory)
-    mcp = create_host_mcp(root, agent_harness="pi", caller_role="main")
+    mcp = create_host_mcp(root, agent_harness=agent_harness, caller_role="main")
 
     async def exercise():
         async with AsyncExitStack() as stack:
@@ -160,7 +163,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     ], timeout_seconds=0))["finished"][0]
                     assert first["state"] == "completed"
                 if number == 2 and reconnect is True:
-                    peer = NativeCandidateHost(root, agent_harness="pi", caller=lambda: goal.active_session.session_id)
+                    peer = NativeCandidateHost(root, agent_harness=agent_harness, caller=lambda: goal.active_session.session_id)
                     with pytest.raises(RuntimeError, match="live controller"):
                         peer.open(session.agent_session_id)
                     # Simulate controller process loss after its durable result;
@@ -168,7 +171,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     lost = hosts[0]._sessions.pop(session.agent_session_id).control
                     lost._executor.shutdown(wait=True)
                     lost.session._lease.__exit__(None, None, None)
-                    replacement = create_host_mcp(root, agent_harness="pi", caller_role="main")
+                    replacement = create_host_mcp(root, agent_harness=agent_harness, caller_role="main")
                     client = await stack.enter_async_context(Client(replacement))
                     restored = await call("run", run_id=run_id, candidate_id=task.candidate_id, call_id="1", prompt="One bounded attempt", timeout_seconds=30)
                     assert restored["native_session_id"] == "tt-child-1"
@@ -189,7 +192,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     await asyncio.to_thread(lost._executor.shutdown, wait=True)
                     lost.session._lease.__exit__(None, None, None)
                     assert len(runtime.list_iterations(run_id, task.candidate_id)) == 0
-                    client = await stack.enter_async_context(Client(create_host_mcp(root, agent_harness="pi", caller_role="main")))
+                    client = await stack.enter_async_context(Client(create_host_mcp(root, agent_harness=agent_harness, caller_role="main")))
                     restored = await call("run", run_id=run_id, candidate_id=task.candidate_id, call_id="1", prompt="One bounded attempt", timeout_seconds=30)
                     assert restored["native_session_id"] == "tt-child-1"
                     assert restored["call_id"] == "1"
@@ -216,7 +219,7 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     lost._executor.shutdown(wait=True)
                     lost.session._lease.__exit__(None, None, None)
                     sdk.completion_unknown_once.add("fs.branch.reset")
-                    client = await stack.enter_async_context(Client(create_host_mcp(root, agent_harness="pi", caller_role="main")))
+                    client = await stack.enter_async_context(Client(create_host_mcp(root, agent_harness=agent_harness, caller_role="main")))
                     restored = await call("run", run_id=run_id, candidate_id=task.candidate_id, call_id="2", prompt="One bounded attempt", timeout_seconds=30)
                     assert restored["call_id"] == "2"
                     completed = (await call("wait_any", calls=[
@@ -236,7 +239,48 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                 assert feedback["candidate_id"] == task.candidate_id
                 assert feedback["attempt_iteration"] == number
                 assert len(runtime.list_iterations(run_id, task.candidate_id)) == number
-            await call("close", session_id=session.agent_session_id)
+            if reconnect == "select_active":
+                before = runtime.list_iterations(run_id, task.candidate_id)
+                accepted_inflight.clear()
+                await call("run", run_id=run_id, candidate_id=task.candidate_id, call_id="stop-probe",
+                           prompt="Wait for Main selection", timeout_seconds=30)
+                assert await asyncio.to_thread(accepted_inflight.wait, 5)
+                if agent_harness == "codex":
+                    from goal_plus.host_scope import _codex_run_is_durably_quiescent
+
+                    assert not _codex_run_is_durably_quiescent(root, run_id, scope=scope)
+                selected = await client.call_tool("goal_plus_search_select", {"run_id": run_id},
+                    meta={"threadId": goal.active_session.session_id})
+                assert json.loads(selected.content[0].text)["selected_candidate_id"] == task.candidate_id
+                assert runtime.list_iterations(run_id, task.candidate_id) == before
+                stopped = (await call("wait_any", calls=[
+                    {"session_id": session.agent_session_id, "call_id": "stop-probe"},
+                ], timeout_seconds=5))["finished"][0]
+                assert stopped["state"] == "failed"
+                assert sdk.children == []
+                if agent_harness == "codex":
+                    from goal_plus.host_scope import close_run_candidates
+                    from goal_plus.infrastructure.thinkthread_sessions import session_resource_path
+
+                    resource_path = session_resource_path(root, scope["scope_id"], session.agent_session_id)
+                    closed_resource = resource_path.read_text()
+                    try:
+                        resource_path.unlink()
+                        with pytest.raises(RuntimeError, match="run_not_quiescent"):
+                            close_run_candidates(root_dir=root, scope_id=scope["scope_id"], run_id=run_id)
+                        for field in ("scope_id", "run_id", "candidate_id", "agent_session_id",
+                                      "thinkthread_id", "fs_branch_id"):
+                            unrelated = {**json.loads(closed_resource), field: "unrelated-resource"}
+                            resource_path.write_text(json.dumps(unrelated))
+                            with pytest.raises(RuntimeError, match="run_not_quiescent"):
+                                close_run_candidates(root_dir=root, scope_id=scope["scope_id"], run_id=run_id)
+                    finally:
+                        resource_path.write_text(closed_resource)
+                    assert close_run_candidates(
+                        root_dir=root, scope_id=scope["scope_id"], run_id=run_id,
+                    )["active_count"] == 0
+            else:
+                await call("close", session_id=session.agent_session_id)
 
     try:
         asyncio.run(exercise())

@@ -3,7 +3,6 @@
 from pathlib import Path
 import os
 import subprocess
-import tempfile
 from goal_plus.domain.results_ledger import RESULTS_TSV_RELATIVE_PATH
 from goal_plus.infrastructure.artifacts.git import candidate_git_pathspecs, git_output
 from goal_plus.domain.artifacts import ArtifactRef
@@ -18,6 +17,7 @@ from goal_plus.workspaces import (
     list_files,
     list_source_files,
 )
+from goal_plus.temp import temporary_directory
 
 
 class FileCandidateArtifacts:
@@ -33,7 +33,7 @@ class FileCandidateArtifacts:
                 return True
             # Join settlement history without checking out its keep/rollback tree.
             # A temporary index preserves both staged and unstaged worker edits.
-            with tempfile.TemporaryDirectory(prefix="goal-plus-settlement-index-") as directory:
+            with temporary_directory(prefix="goal-plus-settlement-index-") as directory:
                 env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
                 def git(*args: str) -> str:
                     return subprocess.check_output(["git", *args], cwd=task.workspace, env=env, text=True).strip()

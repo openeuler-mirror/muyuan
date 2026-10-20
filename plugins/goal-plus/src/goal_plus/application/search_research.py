@@ -7,7 +7,9 @@ from goal_plus.application.candidate_ranking import (
     records_by_created,
     best_iteration_record,
 )
-from goal_plus.domain.search import AgentSessionRecord, SearchSpec
+from goal_plus.application.candidate_spec import candidate_spec_id
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.domain.evidence import public_metric_projection
 from goal_plus.ports.state import CandidateRecord
 from goal_plus.ports.candidate_host import CandidateHostSource
 
@@ -126,7 +128,6 @@ class SearchResearch:
     def run_research_rollup(
         self,
         records: list[CandidateRecord],
-        spec: SearchSpec,
         *,
         visible_candidate_ids: list[str],
     ) -> dict[str, Any]:
@@ -138,12 +139,14 @@ class SearchResearch:
         pitfall_groups: list[list[dict[str, Any]]] = []
 
         for record in records_by_created(records):
+            run = self.source.read_run(record.task.run_id)
+            frozen = self.source.read_frozen_spec(candidate_spec_id(run, record))
             research = self.candidate_research_summary(
                 record.task.run_id,
                 record.candidate_id,
             )
-            best_iteration = best_iteration_record(record, spec.metric_direction)
-            score = record_ranking_score(record, spec)
+            best_iteration = best_iteration_record(record, frozen.spec.metric_direction)
+            score = record_ranking_score(record, frozen.spec)
             best_git_head = best_iteration.git_head if best_iteration else None
 
             candidate_features: list[dict[str, Any]] = []
@@ -159,6 +162,10 @@ class SearchResearch:
                         "candidate_id": record.candidate_id,
                         "candidate_visible": record.candidate_id in visible,
                         "candidate_score": score,
+                        "frozen_spec_id": frozen.frozen_spec_id,
+                        "spec_hash": frozen.spec_hash,
+                        "metric_name": frozen.spec.metric_name,
+                        "metric_direction": frozen.spec.metric_direction,
                         "best_git_head": best_git_head,
                     }
                 )
@@ -233,11 +240,18 @@ class SearchResearch:
         source_run = self.source.read_run(source_run_id)
         source_frozen = self.source.read_frozen_spec(source_run.frozen_spec_id)
         records = self.source.read_candidates(source_run_id)
-        frontier_records = top_records(records, source_frozen.spec, 5)
+        spec_ids = {candidate_spec_id(source_run, record) for record in records}
+        if len(spec_ids) > 1:
+            frontier_records = records_by_created(records)[:5]
+        else:
+            ranking_frozen = (
+                self.source.read_frozen_spec(next(iter(spec_ids)))
+                if spec_ids else source_frozen
+            )
+            frontier_records = top_records(records, ranking_frozen.spec, 5)
         visible_candidate_ids = [record.candidate_id for record in frontier_records]
         rollup = self.run_research_rollup(
             records,
-            source_frozen.spec,
             visible_candidate_ids=visible_candidate_ids,
         )
 
@@ -262,12 +276,16 @@ class SearchResearch:
         pitfalls = pitfalls[:30]
         frontier: list[dict[str, Any]] = []
         for record in frontier_records:
-            payload = self.history_candidate_payload(record, source_frozen.spec)
+            payload = self.history_candidate_payload(record)
             frontier.append(
                 {
                     "source_run_id": source_run_id,
                     "candidate_id": record.candidate_id,
                     "score": payload["score"],
+                    "frozen_spec_id": payload["frozen_spec_id"],
+                    "spec_hash": payload["spec_hash"],
+                    "metric_name": payload["metric_name"],
+                    "metric_direction": payload["metric_direction"],
                     "score_reusable": False,
                     "best_iteration": payload["best_iteration"],
                     "best_git_head": payload["best_git_head"],
@@ -297,48 +315,52 @@ class SearchResearch:
     def history_candidate_payload(
         self,
         record: CandidateRecord,
-        spec: SearchSpec,
         *,
         run_worker_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        run = self.source.read_run(record.task.run_id)
+        frozen = self.source.read_frozen_spec(candidate_spec_id(run, record))
+        spec = frozen.spec
         score_report = record.score_report
+        latest_frozen = (
+            self.source.read_frozen_spec(score_report.frozen_spec_id or run.frozen_spec_id)
+            if score_report is not None else None
+        )
+        active_score_report = (
+            score_report if latest_frozen is not None
+            and latest_frozen.frozen_spec_id == frozen.frozen_spec_id else None
+        )
         best_iteration = best_iteration_record(record, spec.metric_direction)
         evidence_score = (
             best_iteration.score
             if best_iteration is not None
-            else score_report.aggregate_score
-            if score_report
+            else active_score_report.aggregate_score
+            if active_score_report
             else None
         )
         evidence_passed = (
             True
             if best_iteration is not None
-            else score_report.process_passed
-            if score_report
+            else active_score_report.process_passed
+            if active_score_report
             else None
         )
         metrics: dict[str, Any] = {}
+        namespaced_metrics: dict[str, Any] = {}
+        metrics_omitted = False
         log_paths: list[str] = []
         latest_verifier_summaries: list[dict[str, Any]] = []
         latest_failure_classes: list[str] = []
         latest_log_paths: list[str] = []
 
         score_report_is_evidence = bool(
-            score_report
-            and score_report.process_passed
-            and score_report.aggregate_score == evidence_score
+            active_score_report
+            and active_score_report.process_passed
+            and active_score_report.aggregate_score == evidence_score
         )
         if best_iteration is not None:
             log_paths = list(best_iteration.log_paths)
-            for verifier_metrics in best_iteration.metrics.values():
-                if isinstance(verifier_metrics, dict):
-                    metrics.update(
-                        {
-                            key: value
-                            for key, value in verifier_metrics.items()
-                            if key not in metrics
-                        }
-                    )
+            namespaced_metrics, metrics_omitted = public_metric_projection(best_iteration.metrics)
         if score_report:
             for result in score_report.verifier_results:
                 if result.failure_class:
@@ -355,11 +377,15 @@ class SearchResearch:
                         "log_path": str(result.log_path) if result.log_path else None,
                     }
                 )
-            if score_report_is_evidence and not metrics:
-                for result in score_report.verifier_results:
-                    if result.metrics:
-                        metrics = result.metrics
-                        break
+            if score_report_is_evidence and best_iteration is None:
+                namespaced_metrics, metrics_omitted = public_metric_projection({
+                    result.name: result.metrics
+                    for result in score_report.verifier_results if result.metrics
+                })
+
+        for verifier_metrics in namespaced_metrics.values():
+            if isinstance(verifier_metrics, dict):
+                metrics.update({key: value for key, value in verifier_metrics.items() if key not in metrics})
 
         key_metrics = {
             key: value
@@ -434,6 +460,7 @@ class SearchResearch:
             "process_passed": evidence_passed,
             "score": evidence_score,
             "metric_name": spec.metric_name,
+            "metric_direction": spec.metric_direction,
             "evidence_source": "best_iteration"
             if best_iteration
             else "latest_score_report",
@@ -453,6 +480,16 @@ class SearchResearch:
             "latest_verifiers": latest_verifier_summaries,
             "latest_log_paths": latest_log_paths,
             "key_metrics": key_metrics,
+            "metrics": namespaced_metrics,
+            "metrics_omitted": metrics_omitted,
+            "frozen_spec_id": frozen.frozen_spec_id,
+            "spec_hash": frozen.spec_hash,
+            "active_frozen_spec_id": frozen.frozen_spec_id,
+            "active_spec_hash": frozen.spec_hash,
+            "spec_revisions": [revision.model_dump(mode="json") for revision in record.spec_revisions],
+            "latest_frozen_spec_id": latest_frozen.frozen_spec_id if latest_frozen else None,
+            "latest_spec_hash": latest_frozen.spec_hash if latest_frozen else None,
+            "llm_validation": strategy_metadata.get("llm_validation", "off"),
         }
         if record.task.proposal:
             expected_tradeoff = record.task.proposal.expected_tradeoff

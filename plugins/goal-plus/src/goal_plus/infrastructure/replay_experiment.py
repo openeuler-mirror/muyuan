@@ -30,6 +30,7 @@ from goal_plus.mcp_client import McpSessionToolBridge
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.session import NativeSessionInput, SessionProcessInput
 from goal_plus.runtime import FileSearchRuntime
+from goal_plus.temp import TMP_ROOT_ENV
 
 
 def _registration(root: Path) -> ProcessRegistration:
@@ -71,7 +72,8 @@ def _rewrite(value: Any, replacements: list[tuple[str, str]]) -> Any:
 def _native_input(root: Path, workspace: Path, point: ReplayForkPoint, thread_id: str | None) -> NativeSessionInput:
     environment = {
         key: value for key, value in os.environ.items()
-        if not key.startswith("GOAL_PLUS_") and key != "CODEX_THREAD_ID"
+        if (not key.startswith("GOAL_PLUS_") or key == TMP_ROOT_ENV)
+        and key != "CODEX_THREAD_ID"
     }
     environment.update(candidate_host_queries(root).process_environment(point.agent_session_id))
     environment.update({
@@ -116,11 +118,11 @@ def _fork_native(point: ReplayForkPoint, root: Path, workspace: Path, prefix: li
         })
         thread_id = str(fork["thread"]["id"])
         if thread_id == point.native_thread_id:
-            raise RuntimeError("NativeForkReusedSourceThread")
+            raise RuntimeError("ForkReusedSourceThread")
         _rpc_request(rpc, "thread/inject_items", {"threadId": thread_id, "items": prefix})
         read = _rpc_request(rpc, "thread/read", {"threadId": thread_id, "includeTurns": True})
         if read["thread"]["id"] != thread_id:
-            raise RuntimeError("NativeForkReadbackIdentityMismatch")
+            raise RuntimeError("ForkReadbackIdentityMismatch")
         verify_injected_prefix(thread_id, prefix)
         return thread_id
     finally:

@@ -12,6 +12,7 @@ from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_no_pending_verification,
     require_worker_iteration_state,
+    require_fork_continuation,
 )
 from goal_plus.domain.results_ledger import (
     RESULTS_TSV_RELATIVE_PATH,
@@ -94,7 +95,7 @@ class CandidateRecoveryWorkflow:
         validate_recovery_ids(run_id, candidate_id)
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-        if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+        if frozen.spec.strategy.adaptive_search_enabled:
             self.sessions.admission.assert_candidate_execution_allowed(
                 self.state.read_candidate(run_id, candidate_id),
                 "recover",
@@ -105,9 +106,10 @@ class CandidateRecoveryWorkflow:
             require_worker_iteration_state(run, "prepare recovery")
             record = self.state.read_candidate(run_id, candidate_id)
             frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+            require_fork_continuation(record)
             if record.status not in {"created", "evaluated"}:
                 raise RuntimeError("RecoveryCandidateUnavailable")
-            if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+            if frozen.spec.strategy.adaptive_search_enabled:
                 self.sessions.admission.assert_candidate_execution_allowed(
                     record, "recover"
                 )
@@ -168,7 +170,7 @@ class CandidateRecoveryWorkflow:
                 require_worker_iteration_state(run, "recover candidate")
                 record = self.state.read_candidate(run_id, candidate_id)
                 frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-                if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+                if frozen.spec.strategy.adaptive_search_enabled:
                     self.sessions.admission.assert_candidate_execution_allowed(
                         record, "recover"
                     )
@@ -191,7 +193,8 @@ class CandidateRecoveryWorkflow:
                 preserved_files = {}
                 if self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV:
                     preserved_files[RESULTS_TSV_RELATIVE_PATH] = render_results_tsv(
-                        record.results_ledger, frozen.spec.metric_name
+                        record.results_ledger, record.results_ledger_metric_name or frozen.spec.metric_name,
+                        candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None,
                     )
                 restored = self.workspace.restore(
                     record,
@@ -206,6 +209,7 @@ class CandidateRecoveryWorkflow:
                     raise RuntimeError(
                         "RecoveryArtifactMismatch: restored tree is not the checkpoint"
                     )
+                self._rebind_provider_checkpoint(record, restored)
                 if preserved_files:
                     self.candidate_ledger.workspace.check(record, frozen.spec.metric_name)
                 # Tool-copy staging belonged to the interrupted, uncommitted attempt.
@@ -228,6 +232,32 @@ class CandidateRecoveryWorkflow:
                 self.state.write_candidate(run_id, record)
                 return recovery
 
+    @staticmethod
+    def _rebind_provider_checkpoint(record: CandidateRecord, restored) -> None:
+        """Make the next worker launch start from the settled provider artifact.
+
+        Local workspaces are physically restored by ``workspace.restore``. A
+        ThinkThread workspace is an immutable private branch, so recovery only
+        changes the launch identity: the next Child must be derived from the
+        exact settled ``fs_snapshot`` rather than the candidate's original
+        baseline snapshot.
+        """
+        if record.task.workspace_provider != "thinkthread":
+            return
+        if restored.kind != "fs_snapshot" or restored.provider != "thinkthread":
+            raise RuntimeError(
+                "RecoveryArtifactProviderMismatch: ThinkThread launch requires an fs_snapshot"
+            )
+        record.task.base_artifact_ref = restored
+        record.task.workspace_base_revision = restored.id
+        handle = dict(record.task.workspace_provider_handle)
+        if handle:
+            handle["base_snapshot_id"] = restored.id
+            record.task.workspace_provider_handle = handle
+            record.task.workspace_access = record.task.workspace_access.model_copy(
+                update={"provider_handle": dict(handle)}
+            )
+
     def _reconcile_recovered_settlements(
         self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord
     ) -> None:
@@ -237,7 +267,7 @@ class CandidateRecoveryWorkflow:
         records = self.state.read_candidates(run.run_id)
         for candidate in records:
             best = best_artifact_iteration_record(
-                candidate, frozen.spec.metric_direction
+                candidate, frozen.spec.metric_direction, frozen_spec_id=run.frozen_spec_id,
             )
             if best is not None and candidate.score_report is not None:
                 report = candidate.score_report.model_copy(

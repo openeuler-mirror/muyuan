@@ -54,7 +54,9 @@ class FileCandidateLedgerWorkspace:
         metric_name: str,
     ) -> Path:
         path = record.task.workspace / RESULTS_TSV_RELATIVE_PATH
-        expected = render_results_tsv(record.results_ledger, metric_name)
+        metric_name = record.results_ledger_metric_name or metric_name
+        expected = render_results_tsv(record.results_ledger, metric_name,
+                                      candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None)
         try:
             actual = path.read_text(encoding="utf-8")
         except OSError as exc:

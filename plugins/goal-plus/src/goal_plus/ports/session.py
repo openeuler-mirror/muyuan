@@ -1,15 +1,211 @@
 """Native session execution facts; no candidate admission or settlement."""
 
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
+from goal_plus.domain.artifacts import ArtifactRef, WorkspaceAttachment
 from goal_plus.ports.sandbox import ProcessSandbox
 
-
 SessionOperation = Literal["wake", "wait", "message", "interrupt", "stop", "close"]
+SessionMode = Literal["fresh", "fork"]
+
+
+@dataclass(frozen=True)
+class ParentCheckpoint:
+    """A completed, immutable parent boundary eligible for forking."""
+
+    parent_native_session_id: str
+    checkpoint_id: str
+    checkpoint_kind: str
+    frozen_spec_id: str
+    source_artifact_ref: ArtifactRef | None = None
+    runtime_provider: AgentRuntimeProvider = "direct"
+    main_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                self.parent_native_session_id,
+                self.checkpoint_id,
+                self.checkpoint_kind,
+                self.frozen_spec_id,
+            )
+        ):
+            raise ValueError("parent checkpoint fields must be non-empty")
+
+    @property
+    def parent_session_id(self) -> str:
+        return self.parent_native_session_id
+
+
+@dataclass(frozen=True, init=False)
+class ProviderDispatchRequest:
+    """Host-owned inputs for creating one isolated native branch."""
+
+    dispatch_group_id: str
+    dispatch_target_index: int
+    parent_checkpoint: ParentCheckpoint
+    workspace: Path
+    worker_identity: dict[str, Any]
+    budget: dict[str, Any]
+    tool_capabilities: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        dispatch_group_id: str | None = None,
+        dispatch_target_index: int | None = None,
+        parent_checkpoint: ParentCheckpoint | None = None,
+        workspace: Path | None = None,
+        worker_identity: dict[str, Any] | None = None,
+        budget: dict[str, Any] | None = None,
+        tool_capabilities: tuple[str, ...] = (),
+    ) -> None:
+        object.__setattr__(self, "dispatch_group_id", dispatch_group_id or "")
+        object.__setattr__(self, "dispatch_target_index", dispatch_target_index or 0)
+        object.__setattr__(self, "parent_checkpoint", parent_checkpoint)
+        object.__setattr__(self, "workspace", workspace or Path())
+        object.__setattr__(self, "worker_identity", worker_identity or {})
+        object.__setattr__(self, "budget", budget or {})
+        object.__setattr__(self, "tool_capabilities", tuple(tool_capabilities))
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        if self.parent_checkpoint is None:
+            raise ValueError("dispatch request requires a parent checkpoint")
+        if not self.dispatch_group_id.strip() or self.dispatch_target_index < 1:
+            raise ValueError("dispatch request requires a positive target identity")
+        if not self.workspace.is_absolute():
+            raise ValueError("dispatch workspace must be absolute")
+        if not self.worker_identity:
+            raise ValueError("dispatch request requires worker identity")
+        if len(set(self.tool_capabilities)) != len(self.tool_capabilities):
+            raise ValueError("fork tool capabilities must be unique")
+
+    @property
+    def fork_group_id(self) -> str:
+        return self.dispatch_group_id
+
+    @property
+    def branch_index(self) -> int:
+        return self.dispatch_target_index
+
+    @property
+    def checkpoint(self) -> ParentCheckpoint:
+        return self.parent_checkpoint
+
+
+@dataclass(frozen=True, init=False)
+class ProviderDispatchReceipt:
+    """Observable host receipt for one branch creation attempt."""
+
+    provider_session_id: str | None
+    parent_native_session_id: str
+    workspace: Path
+    launch_state: Literal["started", "failed", "cleaned"]
+    failure: str | None = None
+    started_at: str | None = None
+    closed_at: str | None = None
+    context_projection_digest: str | None = None
+    native_session_file: str | None = None
+    runtime_provider: AgentRuntimeProvider = "direct"
+    checkpoint_id: str | None = None
+    checkpoint_kind: str | None = None
+    workspace_attachment: WorkspaceAttachment | None = None
+    request_id: str | None = None
+    provider_capabilities: tuple[str, ...] = ()
+    model: dict[str, str] | None = None
+    profile: str | None = None
+
+    def __init__(
+        self,
+        provider_session_id: str | None = None,
+        parent_native_session_id: str = "",
+        workspace: Path | None = None,
+        launch_state: Literal["started", "failed", "cleaned"] = "started",
+        failure: str | None = None,
+        started_at: str | None = None,
+        closed_at: str | None = None,
+        context_projection_digest: str | None = None,
+        native_session_file: str | None = None,
+        runtime_provider: AgentRuntimeProvider = "direct",
+        checkpoint_id: str | None = None,
+        checkpoint_kind: str | None = None,
+        workspace_attachment: WorkspaceAttachment | None = None,
+        request_id: str | None = None,
+        provider_capabilities: tuple[str, ...] = (),
+        model: dict[str, str] | None = None,
+        profile: str | None = None,
+    ) -> None:
+        object.__setattr__(self, "provider_session_id", provider_session_id)
+        object.__setattr__(self, "parent_native_session_id", parent_native_session_id)
+        object.__setattr__(self, "workspace", workspace or Path())
+        object.__setattr__(self, "launch_state", launch_state)
+        object.__setattr__(self, "failure", failure)
+        object.__setattr__(self, "started_at", started_at)
+        object.__setattr__(self, "closed_at", closed_at)
+        object.__setattr__(self, "context_projection_digest", context_projection_digest)
+        object.__setattr__(self, "native_session_file", native_session_file)
+        object.__setattr__(self, "runtime_provider", runtime_provider)
+        object.__setattr__(self, "checkpoint_id", checkpoint_id)
+        object.__setattr__(self, "checkpoint_kind", checkpoint_kind)
+        object.__setattr__(self, "workspace_attachment", workspace_attachment)
+        object.__setattr__(self, "request_id", request_id)
+        object.__setattr__(self, "provider_capabilities", tuple(provider_capabilities))
+        object.__setattr__(self, "model", model)
+        object.__setattr__(self, "profile", profile)
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        if not self.parent_native_session_id:
+            raise ValueError("dispatch receipt requires parent identity")
+        if self.launch_state == "started" and not self.provider_session_id:
+            raise ValueError("started dispatch receipt requires provider identity")
+        if self.launch_state == "failed" and not self.failure:
+            raise ValueError("failed fork receipt requires failure")
+        if self.runtime_provider == "thinkthread" and self.launch_state == "started":
+            if not self.checkpoint_id or not self.checkpoint_kind or not self.context_projection_digest:
+                raise ValueError("ThinkThread fork receipt requires an exact context boundary")
+            if self.workspace_attachment is None or self.workspace_attachment.provider != "thinkthread":
+                raise ValueError("ThinkThread fork receipt requires a private Fs attachment")
+
+    @property
+    def branch_native_session_id(self) -> str | None:
+        return self.provider_session_id
+
+    @property
+    def forked_from_native_session_id(self) -> str:
+        return self.parent_native_session_id
+
+
+class DispatchProvider(Protocol):
+    def fork(self, request: ProviderDispatchRequest, *, timeout: float) -> ProviderDispatchReceipt: ...
+
+
+class ProviderDispatchAdapter(Protocol):
+    """Provider-specific complete boundary selection and isolated derivation."""
+
+    def prepare_checkpoint(
+        self, run_id: str, caller_id: str, checkpoint_id: str = "latest_completed",
+    ) -> ParentCheckpoint: ...
+
+    def start_group(
+        self, requests: Sequence[ProviderDispatchRequest], *, timeout: float,
+        on_receipt: Callable[[ProviderDispatchRequest, ProviderDispatchReceipt], None] | None = None,
+        on_submitted: Callable[[ProviderDispatchRequest], None] | None = None,
+        on_unknown: Callable[[ProviderDispatchRequest], None] | None = None,
+    ) -> tuple[ProviderDispatchReceipt, ...]: ...
+
+    def recover_receipts(self, run_id: str, caller_id: str) -> tuple[ProviderDispatchReceipt, ...]: ...
+
+
+class SearchForkLauncher(Protocol):
+    def fork_search_run(
+        self, run_id: str, checkpoint_id: str = "latest_completed",
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -161,6 +357,7 @@ class SessionOpenResult:
 
 
 class SessionLauncher(Protocol):
+    def close_candidates(self, run_id: str) -> None: ...
     def apply_allocation_decision(self, run_id: str, decision_id: str) -> dict[str, Any]: ...
     def wake_internal_agents(self, run_id: str) -> None: ...
     def run_candidate(self, run_id: str, candidate_id: str, call_id: str, prompt: str,

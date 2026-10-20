@@ -51,12 +51,6 @@ class FileSearchRunState(FileCandidateQueries):
             load_json(self.run_dir(run_id) / "plans" / f"{plan_id}.json")
         )
 
-    def read_plans(self, run_id: str) -> list[SearchPlan]:
-        return [
-            SearchPlan.model_validate(load_json(path))
-            for path in sorted((self.run_dir(run_id) / "plans").glob("plan_*.json"))
-        ]
-
     def write_plan(self, plan: SearchPlan) -> None:
         write_json(
             self.run_dir(plan.run_id) / "plans" / f"{plan.plan_id}.json",

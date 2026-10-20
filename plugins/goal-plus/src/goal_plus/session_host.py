@@ -1,27 +1,34 @@
 """Native candidate launch/control assembly for a single host MCP service."""
 
+import inspect
+import logging
+import math
+import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-import threading
-import time
-import math
-import logging
 
 from goal_plus.application.candidate_delivery import CandidateDelivery
 from goal_plus.bootstrap import build_scope_process_registry, build_scope_state
 from goal_plus.candidate_host import candidate_host_queries
-from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.adaptive.models import SteeringTarget
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.goal import GoalPlusRecord
-from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.domain.search import (
+    AgentSessionRecord,
+)
+from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.execution.native_session import CodexSession, PiSession
-from goal_plus.execution.scope import assert_scope_admission
+from goal_plus.execution.scope import (
+    assert_scope_admission,
+)
 from goal_plus.execution.session_control import NativeSessionControl
 from goal_plus.execution.session_rpc import SessionRequestRejected
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import (
+    close_run_candidates,
     ensure_execution_scope,
     execution_scope_for_owner,
     execution_scope_for_run,
@@ -29,16 +36,24 @@ from goal_plus.host_scope import (
     goal_scope_activation_id,
     goal_scope_resume_nonce,
 )
+from goal_plus.infrastructure.direct_fork import DirectDispatchAdapter
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.ports.allocation_apply import DispatchRejected
 from goal_plus.ports.process import ProcessRegistration
-from goal_plus.ports.scope import ScopeAttachment, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
-from goal_plus.ports.session import SessionOpenResult, SessionOperation
-from goal_plus.runtime import FileSearchRuntime
-from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.ports.scope import (
+    SCOPE_PROCESS_TERMINAL_STATUSES,
+    ScopeAttachment,
+    ScopeRecord,
+)
+from goal_plus.ports.session import (
+    ProviderDispatchAdapter,
+    ProviderDispatchRequest,
+    SessionOpenResult,
+    SessionOperation,
+)
 from goal_plus.projections.session_tools import session_call_receipt
-
+from goal_plus.runtime import FileSearchRuntime
 
 # Native initialization and MCP discovery, independently of a model invocation.
 SESSION_START_TIMEOUT_SECONDS = 60.0
@@ -202,6 +217,7 @@ class _CandidateInvocation:
     def close(self) -> None:
         self._resume_required = True
         self.native.close()
+        self.host.runtime.candidate_sessions.record_dispatch_close(self.identity, self.native_session_id)
 
     def reopen(self, *, timeout: float = SESSION_START_TIMEOUT_SECONDS) -> None:
         if self._resume_required:
@@ -223,6 +239,29 @@ class NativeCandidateHost:
         self._sessions: dict[str, _HostedCandidate] = {}
         self._verifier_queues: dict[str, tuple[str, object]] = {}
         self._closing = False
+
+    def close_candidates(self, run_id: str) -> None:
+        """Close this run's workers before Main selects, retaining internal queues."""
+        self._admit_run(run_id, self.caller(), execution=False)
+        scope = execution_scope_for_run(root_dir=self.root, run_id=run_id)
+        if scope is None:
+            raise RuntimeError("candidate closeout requires a host execution scope")
+        if scope.get("state") == "closed":
+            cleanup = scope.get("cleanup", {})
+            if cleanup.get("active_count") == 0 and not cleanup.get("errors"):
+                return
+            raise RuntimeError("candidate closeout has no successful scope cleanup receipt")
+        def close_native_sessions(attachment: ScopeAttachment) -> None:
+            with self._lock:
+                sessions = [item for item in self._sessions.values()
+                            if item.run_id == attachment.identity]
+                for item in sessions:
+                    item.control.close()
+
+        close_run_candidates(
+            root_dir=self.root, scope_id=scope["scope_id"], run_id=run_id,
+            close_native_sessions=close_native_sessions,
+        )
 
     def admit(
         self, identity: str, caller_id: str, *, execution: bool,
@@ -598,7 +637,13 @@ class NativeCandidateHost:
                           else self.open(previous.agent_session_id))
             else:
                 current = self.queries.current_session(run_id, candidate_id)
-                if new_session and current is not None:
+                # A fork branch already owns a provider-created native
+                # session. Replacing its logical session would create a new
+                # agent identity while the fork binding must remain attached
+                # to the original branch identity. Treat the first dispatch
+                # as a reuse of that bound branch; ordinary candidates retain
+                # the existing replacement behavior.
+                if new_session and current is not None and current.candidate_origin is None:
                     hosted = self._sessions.get(current.agent_session_id)
                     if hosted is not None or current.runtime_provider == "thinkthread" or not current.session_handle.metadata.get("transport"):
                         opened = (SessionOpenResult(current.agent_session_id, hosted.control.session.native_session_id,
@@ -652,6 +697,149 @@ class NativeCandidateHost:
     def open(self, agent_session_id: str) -> SessionOpenResult:
         return self._open(agent_session_id, self.caller())
 
+    def fork_search_run(
+        self,
+        run_id: str,
+        checkpoint_id: str = "latest_completed",
+    ) -> dict[str, object]:
+        """Fork a persisted group once; CandidateSessions owns all business receipts."""
+        with self._lock, exclusive_file_lock(self.root / "host-sessions" / f"{run_id}.dispatch_group.lock"):
+            caller_id = self.caller()
+            self._admit_run(run_id, caller_id, execution=True)
+            run = self.queries.source.read_run(run_id)
+            provider = self.queries.runtime_provider(run_id)
+            if run.dispatch_group is not None:
+                existing = run.dispatch_group
+                if (existing.main_session_id != caller_id or existing.runtime_provider != provider
+                        or checkpoint_id not in {"latest_completed", existing.checkpoint_id}):
+                    raise RuntimeError("ForkReplayConflict: run already has another fork group")
+                if existing.status in {"started", "closed"} or (
+                    existing.status == "failed"
+                    and not any(branch.launch_state == "unknown" for branch in existing.targets)
+                ):
+                    return existing.model_dump(mode="json")
+            adapter: ProviderDispatchAdapter
+            if provider == "thinkthread":
+                from goal_plus.infrastructure.thinkthread_fork import (
+                    ThinkThreadDispatchAdapter,
+                )
+
+                adapter = ThinkThreadDispatchAdapter(self.root, self.runtime, self.agent_harness)
+            else:
+                adapter = DirectDispatchAdapter(
+                    self.root, self.runtime, self.agent_harness, checkpoint_timeout=SESSION_START_TIMEOUT_SECONDS,
+                )
+            sessions = self.runtime.candidate_sessions
+            if run.dispatch_group is not None:
+                fork = run.dispatch_group
+                has_pending_provider_fence = any(
+                    branch.launch_state in {"submitted", "unknown"}
+                    or (
+                        branch.launch_state in {"started", "cleaned"}
+                        and not branch.binding.launch_receipt
+                    )
+                    for branch in fork.targets
+                )
+                if fork.status == "prepared" and not has_pending_provider_fence:
+                    # Complete any target/session records left behind by a
+                    # crash during preparation.  The coordinator is
+                    # idempotent and binds already-created targets before the
+                    # provider is called.
+                    fork = sessions.prepare_dispatch_group(
+                        run_id,
+                        fork.parent_native_session_id,
+                        fork.checkpoint_id,
+                        fork.checkpoint_kind,
+                        runtime_provider=provider,
+                        main_session_id=caller_id,
+                    )
+                # A provider receipt is authoritative once it has been copied
+                # into the branch binding.  Cleanup may have already closed
+                # the provider resource, so a later retry must only return
+                # the persisted partial result instead of asking the provider
+                # for a journal that no longer exists.
+                receipts_are_durable = bool(fork.targets) and all(
+                    branch.launch_state in {"started", "cleaned", "failed", "prepared"}
+                    and branch.launch_state not in {"submitted", "unknown"}
+                    and not (
+                        branch.launch_state == "started"
+                        and not branch.binding.launch_receipt
+                    )
+                    for branch in fork.targets
+                )
+                if fork.status == "partial" and receipts_are_durable:
+                    return fork.model_dump(mode="json")
+                all_prepared = bool(fork.targets) and all(
+                    branch.launch_state == "prepared" and not branch.binding.launch_receipt
+                    for branch in fork.targets
+                )
+                if not all_prepared:
+                    receipts = adapter.recover_receipts(run_id, caller_id)
+                    if len(receipts) != len(fork.targets):
+                        raise RuntimeError("ForkRecoveryIncomplete: recovered receipt count differs from the group")
+                    for branch, receipt in zip(fork.targets, receipts, strict=True):
+                        sessions.record_dispatch_receipt(run_id, branch.dispatch_target_index, receipt)
+                    failure = None if all(receipt.launch_state == "started" for receipt in receipts) else "fork resources were cleaned before group finalization"
+                    return sessions.finish_dispatch_group(run_id, failure=failure).model_dump(mode="json")
+                # The group was durably prepared but no provider call was
+                # fenced. Re-establish the provider adapter's checkpoint
+                # context and retry startup; recovery is only required after
+                # a submitted/unknown target exists.
+                checkpoint = adapter.prepare_checkpoint(run_id, caller_id, fork.checkpoint_id)
+            else:
+                checkpoint = adapter.prepare_checkpoint(run_id, caller_id, checkpoint_id)
+                fork = sessions.prepare_dispatch_group(
+                    run_id, checkpoint.parent_native_session_id, checkpoint.checkpoint_id, checkpoint.checkpoint_kind,
+                    runtime_provider=provider, main_session_id=caller_id,
+                )
+            requests = tuple(
+                ProviderDispatchRequest(
+                    dispatch_group_id=fork.dispatch_group_id, dispatch_target_index=branch.dispatch_target_index,
+                    parent_checkpoint=checkpoint,
+                    workspace=branch.binding.workspace, worker_identity=branch.binding.worker_identity,
+                    budget=branch.binding.budget, tool_capabilities=tuple(branch.binding.tool_capabilities),
+                )
+                for branch in fork.targets
+            )
+            try:
+                on_receipt = lambda request, receipt: sessions.record_dispatch_receipt(run_id, request.dispatch_target_index, receipt)
+                on_submitted = lambda request: sessions.mark_dispatch_submitted(run_id, request.dispatch_target_index)
+                on_unknown = lambda request: sessions.mark_dispatch_unknown(run_id, request.dispatch_target_index)
+                adapter_parameters = inspect.signature(adapter.start_group).parameters
+                supports_submission_fence = (
+                    "on_submitted" in adapter_parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in adapter_parameters.values()
+                    )
+                )
+                supports_unknown_fence = "on_unknown" in adapter_parameters or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in adapter_parameters.values()
+                )
+                if supports_submission_fence:
+                    kwargs = {
+                        "timeout": SESSION_START_TIMEOUT_SECONDS,
+                        "on_receipt": on_receipt,
+                        "on_submitted": on_submitted,
+                    }
+                    if supports_unknown_fence:
+                        kwargs["on_unknown"] = on_unknown
+                    adapter.start_group(requests, **kwargs)
+                else:
+                    # Narrow compatibility with provider test doubles and
+                    # third-party adapters that implement the pre-fence
+                    # callback contract. Production adapters expose it.
+                    adapter.start_group(
+                        requests,
+                        timeout=SESSION_START_TIMEOUT_SECONDS,
+                        on_receipt=on_receipt,
+                    )
+                return sessions.finish_dispatch_group(run_id).model_dump(mode="json")
+            except BaseException as exc:
+                sessions.finish_dispatch_group(run_id, failure=f"{type(exc).__name__}: {exc}")
+                raise
+
     def _open(
         self, agent_session_id: str, caller_id: str, *, run_locked: bool = False,
     ) -> SessionOpenResult:
@@ -675,7 +863,9 @@ class NativeCandidateHost:
             scope = execution_scope_for_run(root_dir=self.root, run_id=session.run_id)
             scope_id = scope["scope_id"]
             if session.runtime_provider == "thinkthread":
-                from goal_plus.infrastructure.thinkthread_sessions import ThinkThreadCandidateSession
+                from goal_plus.infrastructure.thinkthread_sessions import (
+                    ThinkThreadCandidateSession,
+                )
 
                 with (
                     nullcontext()
@@ -743,7 +933,12 @@ class NativeCandidateHost:
 
         def register(pid):
             self.admit(agent_session_id, caller_id, execution=True, scope_id=scope_id)
-            if resume or previous is not None:
+            # A fork session already points at the provider-created branch
+            # thread, but it has no prior candidate process resource to retire.
+            # Continuations after the first launch still require the normal
+            # finish-before-relaunch fence once the host has bound scope metadata.
+            fork_bootstrap = session.candidate_origin is not None and not session.session_handle.metadata.get("scope_id")
+            if (resume or previous is not None) and not fork_bootstrap:
                 # Registration runs while the new process holds the execution lease.
                 self._finish_previous_native_resources(session)
             return registry.register(
@@ -755,9 +950,9 @@ class NativeCandidateHost:
             register=register, finish=lambda token: registry.finish(scope_id=scope_id, token=token),
         )
         if self.agent_harness == "codex":
-            from goal_plus.mcp_client import McpSessionToolBridge
             from goal_plus.infrastructure.replay_capture import FileReplayCapture
             from goal_plus.infrastructure.replay_native import finalize_turn
+            from goal_plus.mcp_client import McpSessionToolBridge
 
             replay_capture = FileReplayCapture(self.root)
 

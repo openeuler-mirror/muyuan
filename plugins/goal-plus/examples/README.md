@@ -118,9 +118,10 @@ Common，显式 `inner_agent` 选择优先。`worker_budget` 可省略；显式�
 个别专项参考 prompt 中的额外时间分配只属于该示例，不是所有宿主的默认策略。
 wait timeout 只限制一次等待，不取消候选，也不自动启动下一轮；verifier 超时由冻结 verifier 定义。
 
-`parallel_loops` 的 `budget.max_parallel` 是初始固定 lane 数，workspace 随 lane 长期保留。
-显式 `adaptive_search` 需要非空 `allocation` 和 Git worktree；此时该字段表示同时活跃的
-candidate 上限，可选 `budget.max_candidates` 限制累计唯一候选数，`null` 不设置累计上限。
+固定并行的 `budget.max_parallel` 是初始固定 lane 数，workspace 随 lane 长期保留。
+显式 `adaptive_search` 至少配置 `allocation` 或 `steering`，并支持 Git worktree 或
+ThinkThread；此时 `budget.max_parallel` 表示同时活跃的 candidate 上限，可选
+`budget.max_candidates` 限制累计唯一候选数，`null` 不设置累计上限。
 完整调度合同见 [Adaptive Search](../docs/adaptive-search.md)。
 
 普通 prompt 使用当前 Host 已选择的模型和 Goal Plus 默认值，不固定 `main`、

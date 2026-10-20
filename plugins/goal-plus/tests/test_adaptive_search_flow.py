@@ -133,7 +133,9 @@ def test_runtime_routes_record_through_real_search_queries_state(tmp_path, monke
     assert not hasattr(runtime.queries, "source")
     allocation = SimpleNamespace(policy="swe_search_uct/v1")
     frozen = SimpleNamespace(spec=SimpleNamespace(
-        strategy=SimpleNamespace(allocation=allocation, steering=None),
+        strategy=SimpleNamespace(
+            adaptive_search_enabled=True, allocation=allocation, steering=None
+        ),
         budget=SimpleNamespace(max_parallel=2),
     ))
     monkeypatch.setattr(runtime.queries.state, "read_frozen_spec", lambda _: frozen)

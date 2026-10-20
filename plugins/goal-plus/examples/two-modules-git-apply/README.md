@@ -7,9 +7,10 @@ verifier、selection、promotion 和 publication apply 后回写当前 Git root�
 
 ```bash
 cd /path/to/muyuan/plugins/goal-plus
+mkdir -p "$PWD/.tmp"
 python3 examples/two-modules-git-apply/prepare_workspace.py \
-  --destination /tmp/goal-plus-two-modules-git
-cd /tmp/goal-plus-two-modules-git
+  --destination "$PWD/.tmp/goal-plus-two-modules-git"
+cd "$PWD/.tmp/goal-plus-two-modules-git"
 python3 verify.py
 ```
 
@@ -39,7 +40,7 @@ hooks：
 ```bash
 cd /path/to/muyuan/plugins/goal-plus
 ./install.sh --codex --yes
-cd /tmp/goal-plus-two-modules-git
+cd "$PWD/.tmp/goal-plus-two-modules-git"
 codex -m gpt-5.6-luna -c model_reasoning_effort=high
 ```
 

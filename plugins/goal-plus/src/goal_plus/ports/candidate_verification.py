@@ -15,6 +15,10 @@ class CandidateVerificationRequest:
     run_id: str
     candidate_id: str
     scope: Literal["process", "promotion"] = "process"
+    frozen_spec_id: str | None = None
+    iteration: int | None = None
+    artifact_ref: ArtifactRef | None = None
+    artifact_hash: str | None = None
 
 
 class CandidateVerifiers(Protocol):

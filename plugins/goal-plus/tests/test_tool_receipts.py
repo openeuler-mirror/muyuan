@@ -32,6 +32,7 @@ def test_freeze_receipt_only_expands_capacity_warning(fits):
         assert "warnings" not in receipt
     assert set(receipt) - {"warnings"} == {
         "frozen_spec_id", "state", "metric_name", "baseline", "promotion_verifiers",
+            "spec_hash", "initial_context", "adaptive_search", "llm_validation",
     }
     assert frozen.model_dump(mode="json") == before
 

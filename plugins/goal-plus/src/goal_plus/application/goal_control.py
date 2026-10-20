@@ -306,6 +306,54 @@ class GoalControl:
             )
             return updated
 
+    def record_goal_context_delivery(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+        context_key: str,
+    ) -> GoalPlusRecord:
+        """Persist the last full Main context delivered by the host.
+
+        Codex hooks are short-lived processes, so the full/brief cadence cannot
+        live in process memory.  This is host observation state attached to the
+        already-authorized Main session; it does not grant authorization or
+        change Goal state.  Repeated delivery of the same key is idempotent.
+        """
+        with self.state.lock_goal(goal_plus_id):
+            record = self.state.read_goal(goal_plus_id)
+            active = record.active_session
+            if (
+                active is None
+                or active.session_id != session_id
+                or active.state != "attached"
+            ):
+                return record
+            if active.metadata.get("goal_context_full_key") == context_key:
+                return record
+            now = self.clock.timestamp()
+            updated = record.model_copy(
+                update={
+                    "active_session": active.model_copy(
+                        update={
+                            "last_seen_at": now,
+                            "metadata": {
+                                **active.metadata,
+                                "goal_context_full_key": context_key,
+                            },
+                        }
+                    ),
+                    "updated_at": now,
+                }
+            )
+            self.state.write_goal(updated)
+            self.state.append_event(
+                goal_plus_id,
+                "goal_context_delivered",
+                {"session_id": session_id, "context_key": context_key},
+            )
+            return updated
+
     def detach_session(
         self,
         goal_plus_id: str,

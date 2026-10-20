@@ -6,6 +6,10 @@
 进程文件写入边界、sandbox 调用图和支持范围见 [Agent sandbox](sandbox.md)。
 图中的框表示职责边界，不规定必须创建同名类、文件或新的持久模型。
 
+Candidate 的两种初始上下文来源共用一条派发生命周期。需要区分 fresh 和 fork 时，先看
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)；该页的 ASCII 图是 session
+identity、provider receipt、bind、continuation 和恢复状态的规范总览。
+
 浏览入口：[连续看图页面](architecture.html)。SVG 可单独打开、放大或下载：
 
 | 图 | 要回答的问题 |

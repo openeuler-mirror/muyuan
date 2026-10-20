@@ -8,11 +8,12 @@ bounded metadata and archive availability.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any, Iterator
@@ -23,6 +24,7 @@ from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json,
 from goal_plus.projections.agent_transcript import (
     AgentTranscriptSession,
     TranscriptEvent,
+    transcript_anchor,
     render_transcript_html,
     render_transcript_jsonl,
 )
@@ -70,7 +72,7 @@ def _tool_contracts_summary(data: dict[str, Any]) -> str:
     return _compact(summary)
 
 
-def _iter_json_lines(path: Path) -> Iterator[dict[str, Any]]:
+def _iter_json_lines(path: Path, warnings: list[str] | None = None) -> Iterator[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             line = line.strip()
@@ -79,6 +81,8 @@ def _iter_json_lines(path: Path) -> Iterator[dict[str, Any]]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
+                if warnings is not None and "invalid_json_lines" not in warnings:
+                    warnings.append("invalid_json_lines")
                 continue
             if isinstance(record, dict):
                 yield record
@@ -226,7 +230,7 @@ def _pi_branch(records: list[dict[str, Any]], leaf_id: str | None, warnings: lis
 
 def read_pi_transcript(path: Path, *, leaf_id: str | None = None) -> _Parsed:
     parsed = _Parsed()
-    records = list(_iter_json_lines(path))
+    records = list(_iter_json_lines(path, parsed.warnings))
     parsed.session_id = next(
         (record.get("id") for record in records
          if record.get("type") == "session" and isinstance(record.get("id"), str)), None)
@@ -236,7 +240,8 @@ def read_pi_transcript(path: Path, *, leaf_id: str | None = None) -> _Parsed:
             parsed.events.extend(_pi_entry_events(record))
             break
     for entry in _pi_branch(records, leaf_id, parsed.warnings):
-        parsed.events.extend(_pi_entry_events(entry))
+        parsed.events.extend(replace(event, meta={**event.meta, "source_entry_id": entry["id"]})
+                             for event in _pi_entry_events(entry))
         if entry.get("type") == "model_change":
             parsed.model = f"{entry.get('modelId')} ({entry.get('provider')})"
         elif entry.get("type") == "thinking_level_change":
@@ -265,7 +270,8 @@ def _codex_reasoning_text(payload: dict[str, Any]) -> str:
 def read_codex_transcript(path: Path) -> _Parsed:
     parsed = _Parsed()
     call_names: dict[str, str] = {}
-    for event in _iter_json_lines(path):
+    for source_record_index, event in enumerate(_iter_json_lines(path, parsed.warnings)):
+        event_start = len(parsed.events)
         at = event.get("timestamp") if isinstance(event.get("timestamp"), str) else ""
         event_type = event.get("type")
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -306,7 +312,7 @@ def read_codex_transcript(path: Path) -> _Parsed:
                     call_names[call_id] = name
                 parsed.events.append(TranscriptEvent(
                     at=at, kind="tool_call", label=name,
-                    content=_compact(payload.get("arguments")),
+                    content=_compact(payload.get("input" if item_type == "custom_tool_call" else "arguments")),
                     meta={"call_id": call_id} if isinstance(call_id, str) else {}))
             elif item_type in ("function_call_output", "custom_tool_call_output"):
                 call_id = payload.get("call_id")
@@ -339,15 +345,28 @@ def read_codex_transcript(path: Path) -> _Parsed:
             elif message_type == "error":
                 parsed.events.append(TranscriptEvent(
                     at=at, kind="error", label="error", content=_compact(payload.get("message"))))
+        # Keep the native record identity on every projected event.  A single
+        # Codex record can produce several rendered events (for example a
+        # response item with a tool call), so attach this after dispatch.
+        native_turn_id = event.get("turn_id")
+        if not isinstance(native_turn_id, str):
+            native_turn_id = payload.get("turn_id")
+        for offset, rendered in enumerate(parsed.events[event_start:], event_start):
+            meta = {**rendered.meta, "source_record_index": source_record_index}
+            if isinstance(native_turn_id, str):
+                meta["native_turn_id"] = native_turn_id
+            parsed.events[offset] = replace(rendered, meta=meta)
     return parsed
 
 
 def read_session_diagnostics_archive(directory: Path) -> _Parsed:
-    """Replay unified TT Child session batches into the same pi-style event stream."""
+    """Replay the Pi extension's TT Child diagnostic Message batches."""
     parsed = _Parsed()
     index = load_json(directory / "index.json")
     if index.get("source") != "thinkthread_messages":
         raise ValueError("not a thinkthread diagnostics archive")
+    if index.get("agent_harness") != "pi":
+        raise ValueError("unsupported diagnostic archive harness")
     entries: dict[str, dict[str, Any]] = {}
     leaf: str | None = None
     for digest, metadata in sorted(index.get("batches", {}).items(), key=lambda item: (
@@ -357,6 +376,11 @@ def read_session_diagnostics_archive(directory: Path) -> _Parsed:
             batch = load_json(directory / f"{digest}.json")
         except (OSError, ValueError):
             parsed.warnings.append("missing_archive_batch")
+            continue
+        content_digest = hashlib.sha256(json.dumps(batch, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        if content_digest != metadata.get("content_sha256"):
+            parsed.warnings.append("archive_batch_content_mismatch")
             continue
         leaf = batch.get("leaf_id") if isinstance(batch.get("leaf_id"), str) else leaf
         for entry in batch.get("entries", []):
@@ -369,30 +393,47 @@ def read_session_diagnostics_archive(directory: Path) -> _Parsed:
     ordered = sorted(entries.values(), key=lambda entry: (
         entry.get("timestamp") or "", entry.get("id") or ""))
     for entry in _pi_branch(ordered, leaf, parsed.warnings):
-        parsed.events.extend(_pi_entry_events(entry))
+        parsed.events.extend(replace(event, meta={**event.meta, "source_entry_id": entry["id"]})
+                             for event in _pi_entry_events(entry))
     if index.get("status") != "recorded":
         parsed.warnings.append(f"archive_status_{index.get('status')}")
     return parsed
 
 
-def _tt_child_raw_history(runtime_root: Path, child_id: str) -> Path | None:
-    """Locate a retained TT Child's raw Pi history before release reclaims it.
-
-    The runtime root lives at <instance>/thinkthreads/<root>/session/goal-plus,
-    and each child keeps its own session at
-    <instance>/thinkthreads/<child>/session/active.jsonl. Once the child is
-    released that file is gone and the retained session archive is the recovery
-    source.
-    """
+def _tt_threads_directory(runtime_root: Path) -> tuple[Path, str] | None:
+    """Recognize the native Pi and Codex session layouts without walking arbitrarily."""
     try:
         root = Path(runtime_root).resolve()
-        session_dir, threads_dir = root.parents[0], root.parents[1]
-        if root.name != "goal-plus" or session_dir.name != "session" or threads_dir.parent.name != "thinkthreads":
+        session_dir = root.parent.parent if root.parent.name == "home" else root.parent
+        if root.name != "goal-plus" or session_dir.name != "session" or session_dir.parent.parent.name != "thinkthreads":
             return None
-        candidate = threads_dir.parent / child_id / "session" / "active.jsonl"
-        return candidate if candidate.is_file() else None
-    except (IndexError, OSError):
+        return session_dir.parent.parent, session_dir.parent.name
+    except OSError:
         return None
+
+
+def _tt_child_raw_history(runtime_root: Path, child_id: str, harness: str = "pi") -> Path | None:
+    """Locate only an exactly bound Child's locally readable native history.
+
+    Pi stores ``session/active.jsonl``; Codex stores rollouts in
+    ``session/home/sessions``. Multiple Codex rollouts remain unknown: choosing
+    the latest file could associate an unrelated native session with a Child.
+    An isolated Root may not be able to read either path.
+    """
+    layout = _tt_threads_directory(runtime_root)
+    if layout is None or not re.fullmatch(r"tt-[A-Za-z0-9-]+", child_id):
+        return None
+    session_dir = layout[0] / child_id / "session"
+    if harness == "pi":
+        candidate = session_dir / "active.jsonl"
+    elif harness == "codex":
+        matches = list((session_dir / "home" / "sessions").rglob("*.jsonl"))
+        if len(matches) != 1:
+            return None
+        candidate = matches[0]
+    else:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _tt_event_store_children(runtime_root: Path) -> dict[str, list[TranscriptEvent]]:
@@ -407,14 +448,13 @@ def _tt_event_store_children(runtime_root: Path) -> dict[str, list[TranscriptEve
     try:
         import sqlite3
 
-        root = Path(runtime_root).resolve()
-        if root.name != "goal-plus":
+        layout = _tt_threads_directory(runtime_root)
+        if layout is None:
             return {}
-        # goal-plus -> session -> <root-thread> -> thinkthreads -> <instance>
-        store = root.parents[3] / "events.sqlite3"
+        threads, root_id = layout
+        store = threads.parent / "events.sqlite3"
         if not store.is_file():
             return {}
-        root_id = root.parents[1].name
         connection = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
         try:
             children: dict[str, list[TranscriptEvent]] = {}
@@ -426,7 +466,8 @@ def _tt_event_store_children(runtime_root: Path) -> dict[str, list[TranscriptEve
                     at = datetime.fromtimestamp(at_ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
                 except (TypeError, ValueError, OSError):
                     at = ""
-                if namespace == "agent.pi" and kind == "turn.completed" and isinstance(source_key, str):
+                if (kind == {"agent.pi": "turn.completed", "agent.codex": "agent.codex.turn.completed"}.get(namespace)
+                        and isinstance(source_key, str)):
                     child = source_key.split(":", 1)[0]
                     try:
                         data = json.loads(blob)
@@ -436,7 +477,8 @@ def _tt_event_store_children(runtime_root: Path) -> dict[str, list[TranscriptEve
                     if isinstance(body, str) and body:
                         children.setdefault(child, []).append(TranscriptEvent(
                             at=at, kind="assistant", label="turn completed", content=body,
-                            meta={"recovered_from": "tt-event-store"}))
+                            meta={"recovered_from": "tt-event-store", "truncated": data.get("truncated"),
+                                  **({"native_turn_id": data["turnId"]} if isinstance(data.get("turnId"), str) else {})}))
                 elif namespace == "platform.message" and kind == "accepted":
                     try:
                         data = json.loads(blob)
@@ -484,8 +526,81 @@ def _controller_journal_events(record: dict[str, Any]) -> list[TranscriptEvent]:
     return events
 
 
+def _tt_record_identity(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: record[key] for key in (
+        "run_id", "candidate_id", "agent_session_id", "root_thinkthread_id", "thinkthread_id",
+        "role", "task_id", "iteration", "attempt", "settlement_id", "invocation_id",
+    ) if record.get(key) is not None}
+
+
+def _read_native_transcript(path: Path, harness: str) -> _Parsed:
+    if path.stat().st_size > MAX_DEBUG_SOURCE_BYTES:
+        raise ValueError("native transcript exceeds diagnostic limit")
+    if harness == "codex":
+        return read_codex_transcript(path)
+    if harness == "pi":
+        return read_pi_transcript(path)
+    raise ValueError("unsupported diagnostic harness")
+
+
+def _tt_child_transcript(root: Path, directory: Path, identity: dict[str, Any],
+                         harness: str) -> AgentTranscriptSession | None:
+    child_id = identity.get("thinkthread_id")
+    if (not isinstance(child_id, str) or not re.fullmatch(r"tt-[A-Za-z0-9-]+", child_id)
+            or not isinstance(identity.get("agent_session_id"), str) or not identity["agent_session_id"]
+            or directory.name != child_id):
+        return None
+    layout = _tt_threads_directory(root)
+    if layout and identity.get("root_thinkthread_id") not in {None, layout[1]}:
+        return None
+    raw = _tt_child_raw_history(root, child_id, harness)
+    if raw is not None:
+        parsed = _read_native_transcript(raw, harness)
+        partial = bool(parsed.warnings)
+        parsed.warnings.append("locally readable native history; provider request coverage unknown")
+        source = raw
+        collection = {"state": "partial" if partial else "raw_history", "reason": "locally_readable_native_history",
+                      "provider_request_coverage": "unknown"}
+    elif (capture := _load_json_quietly(directory / "native-capture.json")) is not None:
+        saved_identity = capture.get("identity")
+        if (capture.get("source") != "thinkthread_native_capture"
+                or capture.get("agent_harness") != harness or not isinstance(saved_identity, dict)
+                or any(saved_identity.get(key) != value for key, value in identity.items())):
+            raise ValueError("retained transcript binding mismatch")
+        source = directory / "native-history.jsonl"
+        with source.open("rb") as stream:
+            content = stream.read(MAX_DEBUG_SOURCE_BYTES + 1)
+        if (len(content) > MAX_DEBUG_SOURCE_BYTES or capture.get("bytes") != len(content)
+                or capture.get("source_sha256") != hashlib.sha256(content).hexdigest()):
+            raise ValueError("retained transcript content mismatch")
+        parsed = _read_native_transcript(source, harness)
+        partial = bool(parsed.warnings)
+        parsed.warnings.append("retained native history; provider request coverage unknown")
+        collection = {"state": "partial" if partial else "archived", "reason": "retained_native_history",
+                      "captured_at": capture.get("captured_at"), "bytes": capture.get("bytes"),
+                      "provider_request_coverage": "unknown"}
+    elif harness == "pi" and (directory / "index.json").is_file():
+        parsed = read_session_diagnostics_archive(directory)
+        source = directory
+        index = load_json(directory / "index.json")
+        collection = {"state": "partial" if parsed.warnings else "archived",
+                      "reason": "diagnostic_message_batches", "batches": len(index.get("batches", {})),
+                      "message_drain_complete": index.get("collection_complete"),
+                      "provider_request_coverage": "unknown"}
+    else:
+        return None
+    return AgentTranscriptSession(
+        session_id=parsed.session_id or str(identity.get("agent_session_id") or child_id),
+        harness=harness, role=str(identity.get("role") or "tt-child"), source_path=str(source),
+        identity=identity, events=parsed.events, warnings=parsed.warnings,
+        model=parsed.model, thinking=parsed.thinking, report_context={"collection": collection},
+    )
+
+
 def _session_directory_name(session: AgentTranscriptSession) -> str:
-    raw = session.session_id or Path(session.source_path).stem or "unknown"
+    raw = session.identity.get("agent_session_id") or session.session_id or Path(session.source_path).stem or "unknown"
+    if session.role in {"verifier", "annotator"}:
+        raw = session.session_id or raw
     safe = _SAFE_NAME.sub("-", f"{session.role}-{raw}").strip("-")
     return safe[:96]
 
@@ -630,6 +745,17 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
     root = Path(root).resolve()
     sessions: list[AgentTranscriptSession] = []
     seen_sources: set[str] = set()
+    child_reads: dict[tuple[Path, str, str], AgentTranscriptSession | None] = {}
+
+    def read_child(directory: Path, identity: dict[str, Any],
+                   harness: str) -> AgentTranscriptSession | None:
+        # Diagnostic indexes and scope journals can discover the same Child.
+        # Keep the complete binding in the key; different identities must still
+        # pass their own retained-history validation.
+        key = (directory, harness, json.dumps(identity, sort_keys=True))
+        if key not in child_reads:
+            child_reads[key] = _tt_child_transcript(root, directory, identity, harness)
+        return child_reads[key]
 
     def add(session: AgentTranscriptSession) -> None:
         if session.source_path and session.source_path in seen_sources:
@@ -637,6 +763,30 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
         if session.source_path:
             seen_sources.add(session.source_path)
         sessions.append(session)
+
+    def parse_native(
+        source: Path, *, harness: str, session_id: str, role: str,
+        identity: dict[str, Any],
+        prefer_declared_session_id: bool = False,
+    ) -> AgentTranscriptSession:
+        session = AgentTranscriptSession(
+            session_id=session_id, harness=harness, role=role,
+            source_path=str(source), identity=identity,
+        )
+        try:
+            parsed = read_pi_transcript(source) if harness == "pi" else read_codex_transcript(source)
+        except (OSError, ValueError) as exc:
+            state = "unavailable" if isinstance(exc, OSError) else "parse_failed"
+            logger.warning("native transcript %s: %s", state, type(exc).__name__)
+            session.warnings.append(state)
+            session.report_context["collection"] = {
+                "state": state, "reason": f"native_history_{type(exc).__name__}",
+            }
+            return session
+        session.session_id = (session_id or parsed.session_id) if prefer_declared_session_id else (parsed.session_id or session_id)
+        session.events, session.warnings = parsed.events, parsed.warnings
+        session.model, session.thinking = parsed.model, parsed.thinking
+        return session
 
     runs = root / "runs"
     if runs.is_dir():
@@ -664,19 +814,14 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                     source = _discover_codex_source(record)
                 if source is None or harness is None:
                     continue
-                if harness == "pi":
-                    parsed = read_pi_transcript(source)
-                else:
-                    parsed = read_codex_transcript(source)
                 identity = {"run_id": run_dir.name, "agent_session_id": agent_session_id}
                 if record.get("candidate_id"):
                     identity["candidate_id"] = record["candidate_id"]
                 role = "final-checker" if str(agent_session_id).startswith("fc_") else "candidate"
-                add(AgentTranscriptSession(
-                    session_id=parsed.session_id or str(agent_session_id), harness=harness,
-                    role=role, source_path=str(source), identity=identity,
-                    events=parsed.events, warnings=parsed.warnings,
-                    model=parsed.model, thinking=parsed.thinking))
+                add(parse_native(
+                    source, harness=harness, session_id=str(agent_session_id), role=role,
+                    identity=identity,
+                ))
 
     inferences = [item for record_path in sorted(
         (root / "host-logs" / "inference-transcripts").glob("*/record.json"))
@@ -695,45 +840,35 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
         for directory in sorted(path for path in diagnostics.iterdir() if path.is_dir()):
             index = _load_json_quietly(directory / "index.json")
             if not index:
-                continue
+                index = _load_json_quietly(directory / "native-capture.json")
+                if not index:
+                    continue
             if index.get("source") == "native" and isinstance(index.get("history"), str):
                 history = Path(index["history"]).expanduser().resolve()
-                if history.is_file():
-                    harness = index.get("agent_harness", "pi")
-                    parsed = read_codex_transcript(history) if harness == "codex" else read_pi_transcript(history)
-                    add(AgentTranscriptSession(
-                        session_id=index.get("session_id") or parsed.session_id or directory.name,
-                        harness=harness, role=str(index.get("role") or "unknown"),
-                        source_path=str(history), events=parsed.events, warnings=parsed.warnings,
-                        model=parsed.model, thinking=parsed.thinking))
-            elif index.get("source") == "thinkthread_messages":
+                add(parse_native(
+                    history, harness=str(index.get("agent_harness") or "pi"),
+                    session_id=str(index.get("session_id") or directory.name),
+                    role=str(index.get("role") or "unknown"), identity=(
+                        index.get("identity") if isinstance(index.get("identity"), dict) else {}
+                    ), prefer_declared_session_id=True,
+                ))
+            elif index.get("source") in {"thinkthread_messages", "thinkthread_native_capture"}:
                 identity = index.get("identity") if isinstance(index.get("identity"), dict) else {}
-                raw = _tt_child_raw_history(root, str(identity.get("thinkthread_id") or ""))
-                if raw is not None:
-                    parsed = read_pi_transcript(raw)
-                    add(AgentTranscriptSession(
-                        session_id=index.get("session_id") or parsed.session_id or directory.name,
-                        harness="pi", role=str(identity.get("role") or "tt-child"), source_path=str(raw),
-                        identity=identity, events=parsed.events, warnings=parsed.warnings,
-                        model=parsed.model, thinking=parsed.thinking))
-                    continue
                 try:
-                    parsed = read_session_diagnostics_archive(directory)
+                    session = read_child(directory, identity, str(index.get("agent_harness") or "pi"))
                 except (OSError, ValueError) as exc:
                     logger.warning("transcript archive unavailable: %s", type(exc).__name__)
                     continue
+                if session is None:
+                    continue
                 recovered = event_store_children.get(str(identity.get("thinkthread_id") or ""))
                 archive_complete = index.get("status") == "recorded" and index.get("collection_complete") is True
-                if recovered and not archive_complete:
+                if recovered and session.source_path == str(directory) and not archive_complete:
                     # Released child: the TT event store still holds turn texts
                     # and controller prompts; merge them over the session archive.
-                    parsed.events = sorted([*parsed.events, *recovered], key=lambda item: item.at or "")
-                    parsed.warnings.append("partial: recovered turn texts from the TT event store")
-                add(AgentTranscriptSession(
-                    session_id=index.get("session_id") or parsed.session_id or directory.name,
-                    harness="pi", role=str(identity.get("role") or "tt-child"), source_path=str(directory),
-                    identity=identity, events=parsed.events, warnings=parsed.warnings,
-                    model=parsed.model, thinking=parsed.thinking))
+                    session.events = sorted([*session.events, *recovered], key=lambda item: item.at or "")
+                    session.warnings.append("partial: recovered turn texts from the TT event store")
+                add(session)
 
     scopes = root / "host-scopes"
     if scopes.is_dir():
@@ -741,6 +876,16 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
             record = _load_json_quietly(journal)
             if not isinstance(record, dict):
                 continue
+            identity = _tt_record_identity(record)
+            child_id = identity.get("thinkthread_id")
+            if isinstance(child_id, str):
+                try:
+                    child = read_child(diagnostics / child_id, identity,
+                                       str(record.get("agent_harness") or "pi"))
+                    if child is not None:
+                        add(child)
+                except (OSError, ValueError) as exc:
+                    logger.warning("bound Child transcript unavailable: %s", type(exc).__name__)
             add(AgentTranscriptSession(
                 session_id=f"controller:{record.get('agent_session_id') or journal.stem}",
                 harness="thinkthread", role="controller-journal", source_path=str(journal),
@@ -750,12 +895,15 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                 model=str(record.get("model") or "")))
 
     _attach_time_advisories(root, sessions)
+    from goal_plus.infrastructure.transcript_context import attach_report_context
+
+    attach_report_context(root, sessions)
     return sessions
 
 
 def _discover_codex_source(record: dict[str, Any]) -> Path | None:
     try:
-        from goal_plus.domain.agents import AgentSessionRecord
+        from goal_plus.domain.search import AgentSessionRecord
         from goal_plus.host_observability import discover_codex_session_file
 
         return discover_codex_session_file(AgentSessionRecord.model_validate(record))
@@ -817,13 +965,21 @@ def write_transcript_files(
             session_dir.mkdir(parents=True, exist_ok=True)
             write_text(session_dir / "transcript.html",
                         render_transcript_html([session], generated_at=generated, max_chars=html_max_chars,
-                                               gap_seconds=gap_seconds))
+                                               gap_seconds=gap_seconds, report_link_prefix="../"))
             written.append({"name": _session_directory_name(session), "role": session.role,
                             "harness": session.harness, "session_id": session.session_id,
                             "events": len(session.events)})
     else:
         written = [{"name": combined_name, "role": "/".join(session.role for session in sessions),
                     "harness": sessions[0].harness if sessions else "", "events": len(sessions)}]
+    write_json(directory / "manifest.json", {
+        "schema_version": 1, "generated_at": generated, "page": combined_name,
+        "sessions": [{"anchor": transcript_anchor(session), "identity": session.identity,
+                      "session_id": session.session_id, "harness": session.harness,
+                      "role": session.role, "events": len(session.events),
+                      "warnings": session.warnings, "report_context": session.report_context}
+                     for session in sessions],
+    })
     return {"output": str(directory), "generated_at": generated, "sessions": written}
 
 
@@ -835,7 +991,12 @@ def export_transcripts(root: Path, **options: Any) -> dict[str, Any]:
     # Collect inside the same lock as publication: concurrent host callbacks must
     # not overwrite a newer whole-runtime snapshot with an older one.
     with exclusive_file_lock(directory / "export.lock"):
-        return write_transcript_files(directory, collect_runtime_transcripts(root), **options)
+        sessions = collect_runtime_transcripts(root)
+        for session in sessions:
+            if session.report_context.get("report_href") and session.identity.get("run_id"):
+                report = root / "runs" / session.identity["run_id"] / "report.html"
+                session.report_context["report_href"] = Path(os.path.relpath(report, directory)).as_posix()
+        return write_transcript_files(directory, sessions, **options)
 
 
 def debug_export_transcripts(root: Path) -> None:
@@ -898,25 +1059,36 @@ def debug_export_child_transcript(root: Path, record: dict[str, Any]) -> None:
         return
     try:
         directory = Path(root) / "host-logs" / "session-diagnostics" / child_id
-        raw = _tt_child_raw_history(Path(root), child_id)
-        parsed = (read_pi_transcript(raw) if raw is not None
-                  else read_session_diagnostics_archive(directory) if (directory / "index.json").is_file()
-                  else None)
-        if parsed is None:
+        harness = str(record.get("agent_harness") or "pi")
+        identity = _tt_record_identity(record)
+        session = _tt_child_transcript(Path(root), directory, identity, harness)
+        if session is None:
             return
-        identity = {key: record.get(key) for key in
-                    ("run_id", "candidate_id", "agent_session_id") if record.get(key)}
+        raw = _tt_child_raw_history(Path(root), child_id, harness)
+        if raw is not None:
+            # Rendering alone is insufficient: the next whole-runtime export
+            # would discard the captured body after provider release removes
+            # the native file. Keep an immutable-byte copy and its binding.
+            with raw.open("rb") as stream:
+                content = stream.read(MAX_DEBUG_SOURCE_BYTES + 1)
+            if len(content) > MAX_DEBUG_SOURCE_BYTES:
+                raise ValueError("native transcript exceeds diagnostic limit")
+            with exclusive_file_lock(directory / "archive.lock"):
+                prior = _load_json_quietly(directory / "native-capture.json")
+                if prior and (prior.get("identity") != identity or prior.get("agent_harness") != harness):
+                    raise PermissionError("retained transcript binding mismatch")
+                write_text(directory / "native-history.jsonl", content.decode("utf-8"))
+                write_json(directory / "native-capture.json", {
+                    "version": 1, "source": "thinkthread_native_capture", "agent_harness": harness,
+                    "identity": identity, "session_id": session.session_id, "captured_at": utc_timestamp(),
+                    "bytes": len(content), "source_sha256": hashlib.sha256(content).hexdigest(),
+                    "coverage": "readable_native_history",
+                })
         journal = AgentTranscriptSession(
             session_id=f"controller:{record.get('agent_session_id') or child_id}",
             harness="thinkthread", role="controller-journal", source_path="thinkthread resource journal",
             identity=identity, events=_controller_journal_events(record),
             model=str(record.get("model") or ""))
-        session = AgentTranscriptSession(
-            session_id=record.get("agent_session_id") or parsed.session_id or child_id,
-            harness="pi", role="tt-child", source_path=str(raw if raw is not None else directory),
-            identity={**identity, "thinkthread_id": child_id},
-            events=parsed.events, warnings=parsed.warnings,
-            model=parsed.model, thinking=parsed.thinking)
         write_transcript_files(directory, [session, journal], per_session=False,
                                combined_name="transcript.html")
         debug_export_transcripts(root)

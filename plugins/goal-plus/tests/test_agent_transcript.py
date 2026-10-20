@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from html import escape
 import json
 from pathlib import Path
 
+import pytest
+
+from goal_plus.domain.agents import AgentSessionHandle
+from goal_plus.domain.search import AgentSessionRecord
 from goal_plus.infrastructure.agent_transcript import (
     collect_runtime_transcripts,
     debug_export_child_transcript,
@@ -119,7 +124,7 @@ def test_html_is_self_contained_and_jsonl_is_flat(tmp_path):
     assert "model glm-5.3-flash (zai) · thinking low" in page
     assert page.count("total 14,145 tok") == 1
     assert "▶ prompt #2 · dispatch/continuation" in page
-    assert "footprint: model-context" in page and "host-records" in page
+    assert "footprint: history-text" in page and "host-records" in page
     assert "injection-ledger worker_steer" in page  # grouped record volume visible
     assert "chars truncated" in render_transcript_html([AgentTranscriptSession(
         session_id="s", harness="pi", role="main", events=[parsed.events[0]])], max_chars=5)
@@ -162,7 +167,16 @@ def _codex_rollout(tmp_path: Path) -> Path:
 
 
 def test_codex_transcript_matches_tool_outputs_and_marks_aborts(tmp_path):
-    parsed = read_codex_transcript(_codex_rollout(tmp_path))
+    rollout = _codex_rollout(tmp_path)
+    custom_input = 'const result = await tools.exec_command({cmd: "printf \'<complete input>\'"});\ntext(result);\n'
+    records = [json.loads(line) for line in rollout.read_text().splitlines()]
+    records.extend([
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec", "call_id": "call_custom", "input": custom_input}},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call_custom", "output": "<complete input>"}},
+    ])
+    parsed = read_codex_transcript(_write_lines(rollout, records))
     assert parsed.session_id == "cx-1"
     labels = [(event.kind, event.label) for event in parsed.events]
     assert ("user", "prompt") in labels
@@ -175,6 +189,12 @@ def test_codex_transcript_matches_tool_outputs_and_marks_aborts(tmp_path):
     assert output.content == "file list"
     context = next(event for event in parsed.events if event.kind == "context")
     assert json.loads(context.content) == {"input_tokens": 100, "output_tokens": 5}
+    custom = next(event for event in parsed.events if event.kind == "tool_call" and event.label == "exec")
+    assert custom.content == custom_input and custom.meta["call_id"] == "call_custom"
+    custom_output = next(event for event in parsed.events if event.kind == "tool_result" and event.label == "exec")
+    assert custom_output.content == "<complete input>" and custom_output.meta["call_id"] == "call_custom"
+    page = render_transcript_html([AgentTranscriptSession("cx-1", "codex", "candidate", events=parsed.events)])
+    assert escape(custom_input) in page
 
 
 def _write_archive(directory: Path, entries: list[dict], *, status: str = "recorded") -> Path:
@@ -190,7 +210,7 @@ def _write_archive(directory: Path, entries: list[dict], *, status: str = "recor
                      "run_id": "run-1", "candidate_id": "c001"},
         "batches": {digest: {"stream_id": "s1", "sequence": 0, "entries": len(entries),
                              "compressed_bytes": 1, "decoded_bytes": 1,
-                             "captured_at": "2026-09-13T11:30:00.000Z", "content_sha256": "x"}},
+                             "captured_at": "2026-09-13T11:30:00.000Z", "content_sha256": digest}},
         "pending_batches": {}, "status": status, "session_id": "child-sess"}), encoding="utf-8")
     return directory
 
@@ -220,6 +240,14 @@ def test_archive_transcript_replays_batches(tmp_path):
 
     partial = _write_archive(tmp_path / "tt-partial", _archive_entries()[:1], status="partial")
     assert "archive_status_partial" in read_session_diagnostics_archive(partial).warnings
+    digest = next(iter(json.loads((directory / "index.json").read_text())["batches"]))
+    batch_path = directory / f"{digest}.json"
+    batch = json.loads(batch_path.read_text())
+    batch["entries"][0]["message"]["content"][0]["thinking"] = "CORRUPTED_BODY"
+    batch_path.write_text(json.dumps(batch))
+    corrupted = read_session_diagnostics_archive(directory)
+    assert "archive_batch_content_mismatch" in corrupted.warnings
+    assert "CORRUPTED_BODY" not in " ".join(event.content for event in corrupted.events)
 
 
 def _runtime_root(tmp_path: Path) -> Path:
@@ -274,8 +302,23 @@ def _runtime_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_collect_runtime_transcripts_merges_all_sources(tmp_path):
-    sessions = collect_runtime_transcripts(_runtime_root(tmp_path))
+def test_collect_runtime_transcripts_merges_all_sources(tmp_path, monkeypatch):
+    root = _runtime_root(tmp_path)
+    codex_home = tmp_path / "codex-home"
+    native_history = codex_home / "sessions/2026/09/16/rollout.jsonl"
+    native_history.parent.mkdir(parents=True)
+    (tmp_path / "rollout.jsonl").rename(native_history)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    native_session = AgentSessionRecord(
+        agent_session_id="agent_cx", run_id="run-1", candidate_id="c002",
+        session_handle=AgentSessionHandle(external_id="cx-1"),
+        created_at="2026-09-16T07:03:03Z", updated_at="2026-09-16T07:03:05Z",
+        workspace=tmp_path / "candidate-workspace",
+    )
+    (root / "runs/run-1/agent_sessions/agent_cx.json").write_text(
+        native_session.model_dump_json(), encoding="utf-8",
+    )
+    sessions = collect_runtime_transcripts(root)
     by_role = {session.role: session for session in sessions}
     assert set(by_role) >= {"main", "candidate", "controller-journal"}
     assert by_role["main"].session_id == "sess-1"
@@ -291,12 +334,64 @@ def test_collect_runtime_transcripts_merges_all_sources(tmp_path):
     assert worker_sessions[0].identity["agent_session_id"] == "agent_worker"
     codex_session = next(session for session in candidates if session.harness == "codex")
     assert codex_session.identity["agent_session_id"] == "agent_cx"
+    assert any(event.kind == "user" and event.content == "do the thing"
+               for event in codex_session.events)
+    assert any(event.kind == "assistant" and event.content == "done"
+               for event in codex_session.events)
+    assert codex_session.source_path == str(native_history)
     advisory = [event for event in codex_session.events if event.label == "codex-time-advisory"]
     assert advisory and advisory[0].content == "Time advisory body"
     journal = by_role["controller-journal"]
     prompts = [event for event in journal.events
                if event.kind == "injection" and event.label == "controller prompt"]
     assert prompts and prompts[0].content == "verify the hypothesis now"
+
+
+@pytest.mark.parametrize("source_kind,harness", [
+    ("run", "pi"), ("run", "codex"), ("native_index", "pi"), ("native_index", "codex"),
+])
+@pytest.mark.parametrize("failure,expected_state", [
+    ("invalid_utf8", "parse_failed"), ("read_error", "unavailable"),
+])
+def test_export_keeps_other_sessions_when_one_native_source_fails(
+    tmp_path, monkeypatch, source_kind, harness, failure, expected_state,
+):
+    root = _runtime_root(tmp_path)
+    (root / "host-logs/codex-time-advisory/sent/agent_cx.json").unlink()
+    if source_kind == "run":
+        source = tmp_path / ("worker.jsonl" if harness == "pi" else "rollout.jsonl")
+        expected_identity = {"run_id": "run-1", "candidate_id": "c001" if harness == "pi" else "c002",
+                             "agent_session_id": "agent_worker" if harness == "pi" else "agent_cx"}
+    else:
+        source = tmp_path / "pi-session.jsonl" if harness == "pi" else _codex_rollout(tmp_path / "main-codex")
+        expected_identity = {}
+        index_path = root / "host-logs/session-diagnostics/pi-abc/index.json"
+        index = json.loads(index_path.read_text())
+        index.update({"history": str(source), "agent_harness": harness})
+        index_path.write_text(json.dumps(index))
+    if failure == "invalid_utf8":
+        source.write_bytes(b"{\xff\n")
+    else:
+        original_open = Path.open
+
+        def unreadable_source(path, *args, **kwargs):
+            if path == source:
+                raise PermissionError("native history became unreadable")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", unreadable_source)
+
+    summary = export_transcripts(root)
+    directory = Path(summary["output"])
+    manifest = json.loads((directory / "manifest.json").read_text())
+    failed = next(item for item in manifest["sessions"] if item["harness"] == harness
+                  and item["identity"] == expected_identity)
+    assert failed["events"] == 0
+    assert expected_state in failed["warnings"]
+    assert failed["report_context"]["collection"]["state"] == expected_state
+    page = (directory / "index.html").read_text(encoding="utf-8")
+    assert expected_state in page
+    assert "second run reply" in page
 
 
 def test_export_transcripts_writes_artifacts(tmp_path):
@@ -450,7 +545,68 @@ def test_release_debug_export_grabs_raw_child_history(tmp_path, monkeypatch):
     assert "RAW_THINKING_BEFORE_RELEASE" in exported  # captured before release
 
 
-def test_released_child_recovers_turns_from_tt_event_store(tmp_path):
+@pytest.mark.parametrize("harness", ["pi", "codex"])
+def test_tt_native_history_without_message_archive_survives_release(tmp_path, monkeypatch, harness):
+    from goal_plus.infrastructure.state.files import write_json
+
+    threads = tmp_path / "instance/thinkthreads"
+    runtime_root = threads / "tt-root/session" / ("home/goal-plus" if harness == "codex" else "goal-plus")
+    if harness == "codex":
+        raw = _codex_rollout(threads / "tt-child/session/home/sessions/2026/10/15")
+        expected_body, native_id = "do the thing", "cx-1"
+    else:
+        history = _pi_history(threads / "tt-child/session")
+        raw = history.with_name("active.jsonl")
+        history.rename(raw)
+        expected_body, native_id = "继续此 Goal Plus 任务。", "sess-1"
+    record = {"thinkthread_id": "tt-child", "root_thinkthread_id": "tt-root",
+              "agent_session_id": "agent-owned", "agent_harness": harness,
+              "run_id": "run-1", "candidate_id": "c001", "status": "closed"}
+    write_json(runtime_root / "host-scopes/scope/thinkthread-sessions/agent-owned.json", record)
+    # A trusted resource journal locates the Child even when no Pi Message archive exists.
+    discovered = next(item for item in collect_runtime_transcripts(runtime_root) if item.harness == harness)
+    assert discovered.session_id == native_id
+    assert discovered.identity["thinkthread_id"] == "tt-child"
+    assert any(expected_body in event.content for event in discovered.events)
+
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "0")
+    debug_export_child_transcript(runtime_root, record)
+    assert not (runtime_root / "host-logs/session-diagnostics/tt-child").exists()
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
+    debug_export_child_transcript(runtime_root, record)
+    raw.unlink()
+    exported = export_transcripts(runtime_root)
+    retained = next(item for item in collect_runtime_transcripts(runtime_root) if item.harness == harness)
+    assert retained.session_id == native_id
+    assert retained.identity["agent_session_id"] == "agent-owned"
+    assert any(expected_body in event.content for event in retained.events)
+    assert "retained native history; provider request coverage unknown" in retained.warnings
+    assert expected_body in (Path(exported["output"]) / "index.html").read_text()
+    # A retained copy missing its binding cannot be attributed to the journal's actor.
+    capture_path = runtime_root / "host-logs/session-diagnostics/tt-child/native-capture.json"
+    capture = json.loads(capture_path.read_text())
+    capture["identity"].pop("agent_session_id")
+    capture_path.write_text(json.dumps(capture))
+    assert not [item for item in collect_runtime_transcripts(runtime_root) if item.harness == harness]
+
+
+def test_tt_codex_ambiguous_native_histories_remain_unavailable(tmp_path):
+    from goal_plus.infrastructure.state.files import write_json
+
+    threads = tmp_path / "instance/thinkthreads"
+    root = threads / "tt-root/session/home/goal-plus"
+    _codex_rollout(threads / "tt-child/session/home/sessions/one")
+    _codex_rollout(threads / "tt-child/session/home/sessions/two")
+    record = {"thinkthread_id": "tt-child", "root_thinkthread_id": "tt-root",
+              "agent_session_id": "agent-owned", "agent_harness": "codex"}
+    write_json(root / "host-scopes/scope/thinkthread-sessions/agent-owned.json", record)
+    assert not [item for item in collect_runtime_transcripts(root) if item.harness == "codex"]
+
+
+@pytest.mark.parametrize(("namespace", "kind"), [
+    ("agent.pi", "turn.completed"), ("agent.codex", "agent.codex.turn.completed"),
+])
+def test_released_child_recovers_turns_from_tt_event_store(tmp_path, namespace, kind):
     import sqlite3
 
     runtime_root, raw_child = _tt_layout(tmp_path)
@@ -463,9 +619,9 @@ def test_released_child_recovers_turns_from_tt_event_store(tmp_path):
         " kind TEXT, schema_version INTEGER, producer_kind TEXT, producer_id TEXT,"
         " recorded_at_unix_ms INTEGER, payload BLOB, source_key TEXT, source_event_id TEXT)")
     connection.execute(
-        "INSERT INTO events VALUES ('e1','s',1,'agent.pi','turn.completed',1,'pi','pi',"
+        "INSERT INTO events VALUES ('e1','s',1,?,?,1,'pi','pi',"
         "1800000000000, ?, 'tt-child:pi:0', NULL)",
-        (json.dumps({"text": "RECOVERED_TURN_SUMMARY"}).encode(),))
+        (namespace, kind, json.dumps({"text": "RECOVERED_TURN_SUMMARY"}).encode()))
     connection.execute(
         "INSERT INTO events VALUES ('e2','s',2,'platform.message','accepted',1,'pi','pi',"
         "1799999999000, ?, NULL, NULL)",

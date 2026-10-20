@@ -6,7 +6,6 @@ import math
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -44,6 +43,7 @@ from goal_plus.workspaces import (
     initialize_workspace_git_baseline,
     GitReferences,
 )
+from goal_plus.temp import temporary_directory
 
 VERIFIER_PHASE_ENV = "GOAL_PLUS_VERIFIER_PHASE"
 
@@ -80,7 +80,7 @@ class LocalVerifiers:
         references = GitReferences(task.workspace_provider)
         parent = self.run_dir(task.run_id) / "candidates" / record.candidate_id / "verification"
         parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=parent) as directory:
+        with temporary_directory(dir=parent) as directory:
             destination = Path(directory) / record.candidate_id
             logical = references.materialize_reference(task.workspace, artifact, destination)
             try:
@@ -283,7 +283,7 @@ class LocalVerifiers:
         )
         try:
             with verifier_resource_lock(resource):
-                with tempfile.TemporaryDirectory(
+                with temporary_directory(
                     prefix="goal-plus-verifier-command-"
                 ) as verifier_tmp:
                     completed = self.execute_verifier_process(
@@ -400,7 +400,7 @@ class LocalVerifiers:
     ) -> BootstrapVerification:
         source_root = Path(spec.source_path).resolve()
         source_workspace = source_root if source_root.is_dir() else source_root.parent
-        with tempfile.TemporaryDirectory(prefix="goal-plus-verifier-preflight-") as directory:
+        with temporary_directory(prefix="goal-plus-verifier-preflight-") as directory:
             workspace = Path(directory) / "workspace"
             copy_source_tree(source_workspace, workspace)
             initialize_workspace_git_baseline(workspace)
@@ -612,7 +612,7 @@ class LocalVerifiers:
         start = time.perf_counter()
         try:
             with verifier_resource_lock(resource) as resource_lease:
-                with tempfile.TemporaryDirectory(
+                with temporary_directory(
                     prefix="goal-plus-verifier-command-"
                 ) as verifier_tmp:
                     completed = self.execute_verifier_process(

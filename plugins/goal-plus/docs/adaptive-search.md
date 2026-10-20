@@ -22,7 +22,8 @@ AllocationDecision、Allocation 计算错误或 Allocation 执行失败都不会
 
 ## 基于 Verifier 评分调度、分配和引导 worker
 
-Adaptive Search 只在 orchestration_mode 为 adaptive_search 时启用。它包含两个正交动作域：
+Adaptive Search 是叠加在固定初始并行 lanes 上的可选策略层。省略
+`strategy.adaptive_search` 时使用固定并行；配置该对象后才启用它包含的两个正交动作域：
 
 - Allocation：根据完整 Snapshot 选择要淘汰的 candidate 和要派生的 source node；
 - Steering：独立启用，或在 Allocation 本次明确没有 Plan 时，根据当前 Record 的诊断事实对现有活动调用
@@ -38,14 +39,19 @@ worktree 和 ThinkThread private workspace；最简只需指定 Allocation polic
 workspace:
   provider: git_worktree
 strategy:
-  allocation:
-    policy: swe_search_uct/v1
+  initial_context: fresh
+  adaptive_search:
+    allocation:
+      policy: swe_search_uct/v1
+    steering:
+      policy: search_diagnostic_guidance/v1
 ~~~
 
 公共 Freeze 输入和内部 SearchSpec 共用 StrategyOptions，在配置解析时完成以下补全，然后
 将结果写入 FrozenSpec 并参与 spec hash：
 
-- 提供 allocation 或 steering 且省略 orchestration_mode 时使用 adaptive_search；显式冲突模式仍拒绝。
+- `strategy.adaptive_search` 至少配置 allocation 或 steering；省略该对象表示固定并行。
+- `initial_context: fork` 与 `adaptive_search` 当前拒绝，因为 fork successor dispatch 尚未接线。
 - verifier 缺省、scores 为空或不完整时，合并已启用 Allocation/Steering 的 required_score_keys，
   保留用户额外选择的 key。未知 key 和重复配置仍拒绝。
 - parameters 可以省略或只覆盖部分字段，其余使用该 policy 版本已有默认值；没有默认值的必填
@@ -53,7 +59,7 @@ strategy:
 
 这些规则位于 [domain/search.py](../src/goal_plus/domain/search.py)；公共输入转换见
 [domain/search_input.py](../src/goal_plus/domain/search_input.py)。补全只组合配置，Verifier 仍按自己
-的注册表解释独立 score key。两项 policy 都未配置时默认 parallel_loops。Selection 参数、完整
+的注册表解释独立 score key。两项 policy 都未配置时使用固定并行。Selection 参数、完整
 评分 key 与版本策略一并冻结；运行中的 run 不接受配置变化。
 
 ## VerifierRecord 耦合设计

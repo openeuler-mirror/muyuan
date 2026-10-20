@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 DEBUG_ENV = "GOAL_PLUS_TEST_DEBUG"
+TMP_ENV = "GOAL_PLUS_TEST_TMP"
 _DEBUG = pytest.StashKey[bool]()
 _DIRECTORIES = pytest.StashKey[list[Path]]()
 _FAILED = pytest.StashKey[bool]()
@@ -17,6 +18,20 @@ _FAILED = pytest.StashKey[bool]()
 
 def configure_test_tmp(config: pytest.Config) -> None:
     config.stash[_DEBUG] = os.environ.get(DEBUG_ENV) == "1"
+    # Pytest's built-in ``tmp_path`` fixture otherwise defaults to the host
+    # tempfile directory (usually /tmp).  A large suite can create thousands
+    # of inodes there, and the location then depends on the host's mount
+    # layout.  Keep the complete pytest scratch tree in the checkout's
+    # ignored .tmp directory.  An explicit ``--basetemp`` remains authoritative
+    # so callers can still choose a different location when needed.
+    if config.getoption("basetemp", default=None) is None:
+        configured = os.environ.get(TMP_ENV)
+        basetemp = (
+            Path(configured).expanduser()
+            if configured
+            else Path.cwd() / ".tmp" / "pytest"
+        )
+        config.option.basetemp = str(basetemp.resolve())
 
 
 def track_test_directory(request: pytest.FixtureRequest, path: Path) -> Path:

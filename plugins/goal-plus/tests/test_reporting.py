@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -27,6 +28,74 @@ from goal_plus.tools import SearchTools
 
 from tests._runtime_helpers import make_project, spec_for
 from tests.test_global_evidence import _search_with_candidates
+from tests.test_fork import fork_runtime
+
+
+@pytest.mark.parametrize("with_transcripts", [False, True])
+def test_report_bundle_preserves_offline_navigation_and_excludes_runtime_state(
+    tmp_path: Path, with_transcripts: bool,
+) -> None:
+    from goal_plus.infrastructure.report_output import FileReportOutput
+
+    root = tmp_path / ".gp"
+    report = root / "runs/run_0001/report.html"
+    report.parent.mkdir(parents=True)
+    report.write_text("<p>Final result</p>")
+    report.with_suffix(".md").write_text("Final result")
+    other_report = root / "runs/run_0002/report.html"
+    other_report.parent.mkdir(parents=True)
+    other_report.write_text("<p>Other run</p>")
+    (report.parent / "run.json").write_text('{"private": true}')
+    transcript = root / "host-logs/agent-transcript"
+    if with_transcripts:
+        transcript.mkdir(parents=True)
+        (transcript / "index.html").write_text(
+            '<a href="../../runs/run_0002/report.html">Other run</a>'
+        )
+        (transcript / "manifest.json").write_text('{"sessions": []}')
+        (transcript / "events.jsonl").write_text('{"event": "actual"}\n')
+        session = transcript / "main-native/transcript.html"
+        session.parent.mkdir()
+        session.write_text('<a href="../../../runs/run_0001/report.html">Report</a>')
+        (transcript / "export.lock").touch()
+        (transcript / "raw-secret.json").write_text("not a deliverable")
+        outside = tmp_path / "outside/transcript.html"
+        outside.parent.mkdir()
+        outside.write_text("not a deliverable")
+        (transcript / "outside").symlink_to(outside.parent, target_is_directory=True)
+        private = root / "private/transcript.html"
+        private.parent.mkdir()
+        private.write_text("private runtime state")
+        (transcript / "directory-alias").symlink_to(private.parent, target_is_directory=True)
+        (transcript / "file-alias").mkdir()
+        (transcript / "file-alias/transcript.html").symlink_to(private)
+
+    output = FileReportOutput(root)
+    bundle = output.write_bundle("run_0001")
+    assert bundle == report.with_name("report-bundle.zip")
+    with ZipFile(bundle) as archive:
+        names = set(archive.namelist())
+        assert {"index.html", "runs/run_0001/report.html", "runs/run_0001/report.md",
+                "runs/run_0002/report.html"} <= names
+        assert archive.read("runs/run_0001/report.html") == report.read_bytes()
+        entry = archive.read("index.html").decode()
+        assert 'href="runs/run_0001/report.html"' in entry
+        if with_transcripts:
+            assert 'href="host-logs/agent-transcript/index.html"' in entry
+            assert "host-logs/agent-transcript/main-native/transcript.html" in names
+            assert archive.read("host-logs/agent-transcript/events.jsonl").endswith(b"\n")
+        else:
+            assert "not exported" in entry.lower()
+            assert not transcript.exists()
+        assert "host-logs/agent-transcript/outside/transcript.html" not in names
+        assert "host-logs/agent-transcript/directory-alias/transcript.html" not in names
+        assert "host-logs/agent-transcript/file-alias/transcript.html" not in names
+        assert not any(name.endswith(("run.json", ".lock", "raw-secret.json"))
+                       for name in names)
+    report.write_text("<p>Refreshed final result</p>")
+    output.write_bundle("run_0001")
+    with ZipFile(bundle) as archive:
+        assert archive.read("runs/run_0001/report.html") == report.read_bytes()
 
 
 def _write_stop_hook_event(
@@ -61,6 +130,111 @@ def _write_stop_hook_event(
         json.dumps(payload),
         encoding="utf-8",
     )
+
+
+def test_fork_observers_show_active_version_and_persisted_provenance_without_mutation(fork_runtime):
+    from goal_plus.monitor import goal_plus_monitor_snapshot
+    from goal_plus.projections.report_markdown import render_markdown_report
+
+    runtime, run_id, candidates, host, _ = fork_runtime
+    host.fork_search_run(run_id)
+    task = candidates[0]
+    state = runtime.candidate_creation.state
+    original = state.read_frozen_spec(state.read_run(run_id).frozen_spec_id)
+    runtime.run_verifier(run_id, task.candidate_id)
+    session_id = state.read_candidate(run_id, task.candidate_id).task.candidate_origin.worker_identity["agent_session_id"]
+    intermediate = runtime.revise_candidate_spec(
+        session_id, "observe-intermediate", original.frozen_spec_id,
+        "Clarify the branch objective before its next evaluation",
+        {"objective": "Evaluate the branch with a clarified objective"},
+    )
+    revised = runtime.revise_candidate_spec(session_id, "observe-revision", intermediate.frozen_spec_id,
+        "Measure smaller values in this branch", {
+            "metric_name": "revised_score", "metric_direction": "minimize",
+            "process_verifiers": [{"name": "revised", "role": "ranking_signal",
+                "command": ["python3", "-c", "import json,runpy; print(json.dumps({'revised_score': runpy.run_path('initial_program.py')['VALUE']}))"],
+                "timeout_seconds": 10}],
+        })
+    for value in (0.3, 0.1):
+        (task.workspace / "initial_program.py").write_text(f"VALUE = {value}\n")
+        runtime.run_verifier(run_id, task.candidate_id, agent_session_id=session_id,
+                             hypothesis=f"Measure branch value {value}")
+    branch = state.read_run(run_id).fork.branches[0]
+    runtime.candidate_sessions.record_dispatch_close(session_id, branch.provider_session_id)
+    from tests.test_llm_verifier import invocation
+
+    workflow = runtime.selection.verifier
+    while audit := workflow.claim_task("report-audit", 60, run_id=run_id):
+        workflow.complete_task(audit.task_id, {
+            "quality_score": 0.8, "scores": None,
+            "score_rationales": {"quality_score": "Exact version and artifact"},
+        }, invocation(), worker_id=audit.lease.worker_id, attempt=audit.attempts)
+        workflow.acknowledge_delivery(audit.task_id)
+    runtime.select(run_id, frozen_spec_id=original.frozen_spec_id)
+    before = state.read_run(run_id)
+    before_candidates = state.read_candidates(run_id)
+    before_sessions = state.read_agent_sessions(run_id)
+
+    snapshot = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    monitored = snapshot["candidates"][task.candidate_id]
+    assert monitored["frozen_spec_id"] == revised.frozen_spec_id
+    assert monitored["metric_direction"] == "minimize"
+    assert monitored["best_iteration"] == 3
+    assert monitored["best_iteration_score"] == 0.1
+    data = build_html_report_data(runtime.root_dir, run_id)
+    details = data["search_tasks"][0]
+    candidate = next(item for item in details["candidates"] if item["candidate_id"] == task.candidate_id)
+    assert candidate["active_frozen_spec_id"] == revised.frozen_spec_id
+    assert candidate["best_iteration"] == 3
+    assert candidate["score"] == 0.1
+    assert [item["frozen_spec_id"] for item in candidate["iterations"]] == [
+        original.frozen_spec_id, revised.frozen_spec_id, revised.frozen_spec_id,
+    ]
+    assert candidate["candidate_origin"]["frozen_spec_id"] == original.frozen_spec_id
+    assert details["sessions"][0]["candidate_origin"]["provider_session_id"] == "branch-1"
+    assert details["dispatch_group"]["targets"][0]["audit_state"] == "completed"
+    assert details["dispatch_group"]["targets"][0]["closed_at"] is not None
+    contracts = {item["frozen_spec_id"]: item for item in details["evaluation_contracts"]}
+    assert set(contracts) == {original.frozen_spec_id, intermediate.frozen_spec_id, revised.frozen_spec_id}
+    assert contracts[intermediate.frozen_spec_id]["usages"]["revision_candidate_ids"] == [task.candidate_id]
+    assert contracts[intermediate.frozen_spec_id]["usages"]["iterations"] == []
+    assert contracts[revised.frozen_spec_id]["usages"]["active_candidate_ids"] == [task.candidate_id]
+    assert contracts[original.frozen_spec_id]["usages"]["selected"] is True
+    assert details["selected_contract"]["frozen_spec_id"] == original.frozen_spec_id
+    assert contracts[revised.frozen_spec_id]["spec"] == revised.spec.model_dump(mode="json")
+    assert contracts[revised.frozen_spec_id]["verifier_hashes"] == original.verifier_hashes
+    assert {change["field"] for change in contracts[revised.frozen_spec_id]["changes"]} >= {
+        "spec.metric_name", "spec.metric_direction", "spec.process_verifiers",
+    }
+    assert all(not change["field"].startswith("verifier_hashes") for change in contracts[revised.frozen_spec_id]["changes"])
+    assert details["statistics"]["scores"]["score_comparable"] is False
+    assert details["statistics"]["scores"]["best"] is None
+    assert details["statistics"]["scores"]["selected"] is None
+    assert _search_trajectory_payload(details) is None
+    assert details["timeline"]["performance"]["score"]["points"] == []
+    html = render_html_report(data)
+    markdown = render_markdown_report(runtime.reporter.queries.markdown_inputs(run_id))
+    assert "<h3>Fork</h3>" in html and "Audit: completed" in html
+    assert "Evaluation contracts" in html and intermediate.revision_reason in html
+    assert "<th>Evaluation contract</th><th>Metric / direction</th>" in html
+    assert "<th>Artifact revision</th>" in html
+    assert f'id="contract-{run_id}-{intermediate.frozen_spec_id}"' in html
+    assert f'href="#contract-{run_id}-{original.frozen_spec_id}"' in html
+    assert "Selected evaluation contract" in html
+    from goal_plus.projections.report_html import _search_trajectory_payloads
+
+    trajectories = _search_trajectory_payloads(details)
+    assert {item["frozen_spec_id"] for item in trajectories} == {original.frozen_spec_id, revised.frozen_spec_id}
+    assert next(item for item in trajectories if item["frozen_spec_id"] == original.frozen_spec_id)["selected_point"]["score"] == 0.0
+    revised_trajectory = next(item for item in trajectories if item["frozen_spec_id"] == revised.frozen_spec_id)
+    assert revised_trajectory["metric_direction"] == "minimize"
+    assert revised_trajectory["selected_point"] is None
+    assert revised_trajectory["global_best"]["scores"] == [0.3, 0.1]
+    assert "## Fork" in markdown and "branch-1" in markdown
+    assert revised.frozen_spec_id in markdown and original.frozen_spec_id in markdown
+    assert state.read_run(run_id) == before
+    assert state.read_candidates(run_id) == before_candidates
+    assert state.read_agent_sessions(run_id) == before_sessions
 
 
 def test_report_correlates_reference_opens_with_subsequent_edits(
@@ -581,6 +755,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         write_html_report(root, second_run, direct_html_path)
     assert not (root / "runs" / second_run / "report.md").exists()
     assert not (root / "runs" / second_run / "report.html").exists()
+    assert not (root / "runs" / second_run / "report-bundle.zip").exists()
     assert not direct_html_path.exists()
 
     goals.set_status(
@@ -612,13 +787,17 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "../../host-logs/agent-transcript/index.html" in html
     assert markdown_path.is_file()
     assert html_path.is_file()
+    with ZipFile(markdown_path.with_name("report-bundle.zip")) as archive:
+        assert archive.read(f"runs/{second_run}/report.html").decode() == html
+        assert archive.read(f"runs/{second_run}/report.md") == markdown_path.read_bytes()
+        assert "host-logs/agent-transcript/index.html" in archive.namelist()
     assert 'data-report-schema="goal-plus-report/v1"' in html
     assert first_run in html
     assert second_run in html
     assert "Search Task 01" in html
     assert "Search Task 02" in html
-    assert "Orchestration" in html
-    assert "parallel_loops" in html
+    assert "Initial context" in html
+    assert "fresh" in html
     assert session.agent_session_id in html
     assert html.count("<h2>Search Execution Timeline</h2>") == 2
     assert "Goal Plus Summary" in html
@@ -1296,7 +1475,7 @@ def test_html_report_data_keeps_search_tasks_and_rounds_separate(
     assert data["goal_plus_id"] == goal.goal_plus_id
     assert [task["run_id"] for task in data["search_tasks"]] == runs
     assert all(
-        task["strategy"]["orchestration_mode"] == "parallel_loops"
+        task["strategy"]["initial_context"] == "fresh"
         for task in data["search_tasks"]
     )
     assert [len(task["plans"]) for task in data["search_tasks"]] == [1, 1]

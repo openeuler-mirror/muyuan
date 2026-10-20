@@ -32,7 +32,7 @@ def test_guess_number_thinkthread_apply_example_is_deterministic(
     ).to_runtime_spec()
     assert spec.source_path == "."
     assert spec.budget.max_parallel == 2
-    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.strategy.initial_context == "fresh"
     assert "worker_host" not in spec.strategy.model_dump()
     assert spec.strategy.worker_launch is None
     assert "agent_harness" not in spec.strategy.evidence_annotator.model_dump()

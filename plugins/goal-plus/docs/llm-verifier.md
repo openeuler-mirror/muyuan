@@ -16,7 +16,7 @@ candidate iteration
        -> optional AdaptiveSearch
 ~~~
 
-固定并发的 parallel_loops 与动态分配的 adaptive_search 共用同一套结算、评分和 Selection
+固定并发与可选 adaptive_search 共用同一套结算、评分和 Selection
 合同。搜索过程中的 Allocation 与 Steering 见 [Adaptive Search](adaptive-search.md)。
 
 ## 评估验证功能和架构
@@ -256,7 +256,7 @@ score_contract_hash 绑定 task 使用的整份规则，不是 score 身份或�
 ~~~yaml
 # 只用 hard_score，不运行 LLM Verifier
 strategy:
-  orchestration_mode: parallel_loops
+  initial_context: fresh
   selection:
     ranking_keys: [hard_score]
     ranking_tolerance: [0.0]
@@ -265,7 +265,7 @@ strategy:
 ~~~yaml
 # 显式启用 Verifier，并选择与 Allocation 无关的附加评分
 strategy:
-  orchestration_mode: parallel_loops
+  initial_context: fresh
   verifier:
     scores: [progress_reward]
 ~~~
@@ -273,8 +273,10 @@ strategy:
 ~~~yaml
 # 在 Git worktree SearchSpec 中，policy 自动补齐所需评分
 strategy:
-  allocation:
-    policy: swe_search_uct/v1
+  initial_context: fresh
+  adaptive_search:
+    allocation:
+      policy: swe_search_uct/v1
 ~~~
 
 若 Selection 包含 quality_score，配置层会自动补齐 verifier: {} 并冻结；即使未启用任何 Adaptive

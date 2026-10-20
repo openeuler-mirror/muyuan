@@ -62,11 +62,15 @@ def ledger_through_iteration(
 def render_results_tsv(
     entries: list[ResultLedgerEntry],
     metric_name: str,
+    *, candidate_identity: tuple[str, str] | None = None,
 ) -> str:
     normalized_metric_name = normalize_result_text(metric_name) or "metric"
     lines = [f"commit\t{normalized_metric_name}\tstatus\thypothesis"]
     for entry in entries:
-        if entry.metric_name != metric_name:
+        if entry.metric_name != metric_name and (
+            candidate_identity is None
+            or (entry.source_run_id, entry.source_candidate_id) != candidate_identity
+        ):
             continue
         lines.append(
             "\t".join(

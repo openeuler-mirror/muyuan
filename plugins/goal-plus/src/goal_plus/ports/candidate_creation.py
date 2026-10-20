@@ -5,7 +5,13 @@ from typing import Any, Protocol
 
 from goal_plus.domain.adaptive.models import ExpansionSource
 from goal_plus.domain.evidence import ResultLedgerEntry
-from goal_plus.domain.search import AgentSessionRecord, CandidateProposal, FrozenSpec, SearchPlan
+from goal_plus.domain.search import (
+    AgentSessionRecord,
+    CandidateProposal,
+    FrozenSpec,
+    CandidateOrigin,
+    SearchPlan,
+)
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
@@ -26,6 +32,7 @@ class CandidateMaterialization:
     expansion_source: ExpansionSource | None = None
     source_record: CandidateRecord | None = None
     results_ledger: list[ResultLedgerEntry] | None = None
+    candidate_origin: CandidateOrigin | None = None
 
 
 class MaterializeCandidate(Protocol):

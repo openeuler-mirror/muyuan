@@ -78,6 +78,45 @@ def require_current_search_result(
         )
 
 
+SEARCH_EVIDENCE_IDENTITY_KEYS = ("candidate_id", "selected_candidate_id")
+
+
+def require_honest_search_evidence(
+    record: GoalPlusRecord,
+    evidence: list[dict[str, Any]] | None,
+    action: str,
+) -> None:
+    """Refuse terminal evidence that names Search facts no settled run produced.
+
+    Candidate identities only exist inside Search runs. A Goal without a
+    recorded current-revision search result must not present candidate or
+    selection claims as terminal evidence: native collab agents and manual
+    edits are not a Search run and never populate search_tasks.
+    """
+    linked = record.linked_search
+    if (
+        linked is not None
+        and linked.goal_revision == record.goal_revision
+        and linked.result_recorded_at is not None
+    ):
+        return
+    for entry in evidence or []:
+        if not isinstance(entry, dict):
+            continue
+        for key in SEARCH_EVIDENCE_IDENTITY_KEYS:
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                raise RuntimeError(
+                    f"cannot {action}; evidence claims {key}={value} but this "
+                    "Goal has no recorded search result for the current goal "
+                    "revision. Run the Search tool chain (freeze spec, create "
+                    "run, candidates, selection, promotion, then "
+                    "goal_plus_record_search_result) or remove claims that no "
+                    "Search run produced; native collab agents cannot "
+                    "substitute a Search run"
+                )
+
+
 def spec_draft_next_action(spec_draft: GoalPlusSpecDraft) -> GoalPlusNextAction:
     if spec_draft.confidence != "high" or spec_draft.open_questions:
         return GoalPlusNextAction(

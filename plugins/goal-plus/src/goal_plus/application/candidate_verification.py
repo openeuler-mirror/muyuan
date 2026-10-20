@@ -4,6 +4,7 @@ from typing import Any, Callable, Literal
 from goal_plus.domain.edit_surface import path_matches
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
+    require_no_pending_verification,
     require_run_not_invalidated,
     require_worker_iteration_state,
 )
@@ -46,6 +47,8 @@ from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.search_context import SearchContext
 from goal_plus.ports.candidate_settlement import CandidateSettlementState
 from goal_plus.ports.candidate_verification import CandidateVerifiers
+from goal_plus.ports.candidate_verification import CandidateVerificationRequest
+from goal_plus.domain.evidence_policy import artifact_iteration_eligible, iteration_artifact_ref
 from goal_plus.ports.clock import Clock
 
 
@@ -83,6 +86,69 @@ class CandidateVerification:
         self.trace = settlement.trace
         self.verifiers, self.persist_run = verifiers, persist_run
 
+    def recheck_selection(
+        self, request: CandidateVerificationRequest, *, execution_lock: int | None = None,
+    ) -> ScoreReport:
+        """Recheck one historical artifact without creating a worker iteration."""
+        from goal_plus.application.candidate_spec import iteration_spec_id
+        from goal_plus.application.candidate_execution import require_fork_ready
+
+        with self.state.lock_run(request.run_id):
+            run = self.state.read_run(request.run_id)
+            self.authorization.require_search_execution(run.run_id)
+            require_run_not_invalidated(run, "recheck selection")
+            if run.state != RunState.SELECTING or request.scope != "process":
+                raise RuntimeError("SelectionRecheckUnavailable: run is not selecting")
+            record = self.state.read_candidate(run.run_id, request.candidate_id)
+            require_candidate_not_recovering(record)
+            require_no_pending_verification(record)
+            if record.accepted_attempt is not None:
+                raise RuntimeError("VerifierInProgress: candidate has an accepted attempt")
+            iteration = next((item for item in record.iterations if item.iteration == request.iteration), None)
+            if (
+                iteration is None
+                or not artifact_iteration_eligible(iteration)
+                or iteration.disposition in {"discard", "failure"}
+                or iteration_spec_id(run, iteration) != request.frozen_spec_id
+                or iteration_artifact_ref(iteration, record.task.workspace_provider) != request.artifact_ref
+                or iteration.artifact_hash != request.artifact_hash
+                or request.frozen_spec_id is None
+                or request.artifact_ref is None
+                or record.task.workspace_provider == "thinkthread"
+            ):
+                raise ValueError("SelectionRecheckMismatch: historical artifact identity changed")
+            frozen = self.state.read_frozen_spec(request.frozen_spec_id)
+            if iteration.spec_hash is not None and iteration.spec_hash != frozen.spec_hash:
+                raise ValueError("SelectionRecheckMismatch: historical spec hash changed")
+            require_fork_ready(run, frozen, [record])
+            generation = record.execution_generation
+        self._require_verifier_budget(run.run_id, frozen)
+        with self.verifiers.workspace(record, request.artifact_ref) as task:
+            checked = record.model_copy(deep=True, update={"task": task})
+            actual = self.artifacts.candidate_artifact_state(run, frozen, checked)
+            if actual.artifact_hash != request.artifact_hash or not actual.artifact_clean:
+                raise RuntimeError("SelectionRecheckMismatch: immutable artifact differs")
+            self.artifacts.apply_candidate_artifact_state(checked, actual)
+            report = self._precheck_candidate(frozen, checked)
+            if report is None:
+                report = self.verifiers.run_commands(
+                    run, frozen, checked, frozen.spec.process_verifiers, "process",
+                    execution_lock=execution_lock,
+                )
+            after = self.artifacts.candidate_artifact_state(run, frozen, checked)
+            if after.artifact_hash != request.artifact_hash or not after.artifact_clean:
+                raise RuntimeError("SelectionRecheckMismatch: verifier changed the immutable artifact")
+        with self.state.lock_run(run.run_id):
+            current_run = self.state.read_run(run.run_id)
+            require_run_not_invalidated(current_run, "accept selection recheck")
+            if current_run.state != RunState.SELECTING:
+                raise RuntimeError("SelectionRecheckUnavailable: run stopped selecting")
+            current = self.state.read_candidate(run.run_id, record.candidate_id)
+            if current.execution_generation != generation:
+                raise RuntimeError("SelectionRecheckMismatch: candidate generation changed")
+            self.authorization.require_search_execution(run.run_id)
+        return report.model_copy(update={"frozen_spec_id": frozen.frozen_spec_id, "spec_hash": frozen.spec_hash})
+
     def verify(
         self,
         run_id: str,
@@ -110,7 +176,12 @@ class CandidateVerification:
                 require_worker_iteration_state(run, "run verifier")
             else:
                 require_run_not_invalidated(run, "run verifier")
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        from goal_plus.application.candidate_spec import candidate_spec_id
+        record = self.state.read_candidate(run_id, candidate_id)
+        frozen = self.state.read_frozen_spec(
+            (run.selected_frozen_spec_id or run.frozen_spec_id) if scope == "promotion"
+            else candidate_spec_id(run, record)
+        )
         normalized_toolization_decision = (
             self.shared_tools.normalize_toolization_decision(
                 run_id=run_id,
@@ -121,10 +192,12 @@ class CandidateVerification:
             )
         )
         record = self.state.read_candidate(run_id, candidate_id)
+        from goal_plus.application.candidate_execution import require_fork_ready
+        require_fork_ready(run, frozen, [record])
         if record.status not in {"created", "evaluated"}:
             raise RuntimeError(f"cannot verify candidate in status {record.status}")
         if scope == "process" and (
-            frozen.spec.strategy.orchestration_mode == "adaptive_search"
+            frozen.spec.strategy.adaptive_search_enabled
         ):
             self.candidate_sessions.admission.assert_candidate_execution_allowed(
                 record,
@@ -267,6 +340,7 @@ class CandidateVerification:
             report = report.model_copy(
                 update={"promotion_passed": report.process_passed}
             )
+        report = report.model_copy(update={"frozen_spec_id": frozen.frozen_spec_id, "spec_hash": frozen.spec_hash})
         state = self.artifacts.candidate_artifact_state(run, frozen, record)
 
         with self.state.lock_run(run_id):
@@ -276,6 +350,8 @@ class CandidateVerification:
             self.artifacts.apply_candidate_artifact_state(record, state)
             record.promotion_report = report
             record.promotion_evidence = PromotionEvidence(
+                frozen_spec_id=frozen.frozen_spec_id,
+                spec_hash=frozen.spec_hash,
                 candidate_id=candidate_id,
                 selected_git_head=run.selected_git_head,
                 git_head=run.selected_git_head,
@@ -299,9 +375,12 @@ class CandidateVerification:
         run = self.state.read_run(run_id)
         self.authorization.require_search_execution(run_id, settlement=True)
         require_worker_iteration_state(run, "resume verifier")
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         record = self.state.read_candidate(run_id, candidate_id)
         request = record.verification_request
+        from goal_plus.application.candidate_spec import candidate_spec_id
+        frozen = self.state.read_frozen_spec(
+            request.frozen_spec_id if request is not None else candidate_spec_id(run, record)
+        )
         if record.score_report is not None and record.score_report.attempt_id == attempt_id:
             with self.state.lock_run(run_id):
                 record = self.state.read_candidate(run_id, candidate_id)
@@ -314,10 +393,10 @@ class CandidateVerification:
             raise RuntimeError("VerifierReplayUnavailable: submitted verification input is missing")
         if record.status not in {"created", "evaluated"}:
             raise RuntimeError(f"cannot resume verifier in candidate status {record.status}")
-        if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+        if frozen.spec.strategy.adaptive_search_enabled:
             self.candidate_sessions.admission.assert_candidate_execution_allowed(record, "run_verifier")
         if (
-            request.frozen_spec_id != frozen.frozen_spec_id
+            request.frozen_spec_id != candidate_spec_id(run, record)
             or request.execution_generation != record.execution_generation
             or request.iteration != len(record.iterations) + 1
             or request.base_artifact_ref != record.results_ledger_artifact_ref

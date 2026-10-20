@@ -91,6 +91,10 @@ def test_three_native_deltas_archive_and_replay(tmp_path, archive_messages):
     directory = tmp_path / "host-logs/session-diagnostics/tt-child"
     index = json.loads((directory / "index.json").read_text())
     assert len(index["batches"]) == 3
+    original_index = (directory / "index.json").read_bytes()
+    # A later caller cannot relabel the real Pi archive with another harness.
+    assert archive_diagnostic_message(tmp_path, {**binding, "agent_harness": "codex"}, message)
+    assert (directory / "index.json").read_bytes() == original_index
     assert (tmp_path / "host-logs/agent-transcript/index.html").is_file()
     analysis = _analyze(directory)
     assert analysis["tool_analysis"]["status"] == "observed"

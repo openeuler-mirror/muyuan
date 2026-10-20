@@ -60,17 +60,18 @@ tester 输出最接近
 
 ```bash
 cd examples/edgebench-ad-placement/workspace-template
-printf '0\n' > /tmp/ad-seeds.txt
-rm -rf /tmp/ad-cases
-./tools/bin/gen /tmp/ad-seeds.txt -d /tmp/ad-cases
+mkdir -p "$PWD/.tmp"
+printf '0\n' > "$PWD/.tmp/ad-seeds.txt"
+rm -rf "$PWD/.tmp/ad-cases"
+./tools/bin/gen "$PWD/.tmp/ad-seeds.txt" -d "$PWD/.tmp/ad-cases"
 ```
 
 编译并检查单个案例：
 
 ```bash
-g++ -std=c++17 -O2 solution.cpp -o /tmp/ad-solution
-/tmp/ad-solution < /tmp/ad-cases/0000.txt > /tmp/ad-output.txt
-./tools/bin/tester /tmp/ad-cases/0000.txt /tmp/ad-output.txt
+g++ -std=c++17 -O2 solution.cpp -o "$PWD/.tmp/ad-solution"
+"$PWD/.tmp/ad-solution" < "$PWD/.tmp/ad-cases/0000.txt" > "$PWD/.tmp/ad-output.txt"
+./tools/bin/tester "$PWD/.tmp/ad-cases/0000.txt" "$PWD/.tmp/ad-output.txt"
 # stderr: Score = <number>
 ```
 

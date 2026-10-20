@@ -2,12 +2,14 @@
 
 from pathlib import Path
 
+from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.domain.adaptive.models import ExpansionSource
 from goal_plus.domain.agents import INNER_AGENT_COMMON
 from goal_plus.domain.artifacts import ArtifactRef, WorkspaceAccess
 from goal_plus.domain.search import (
     CandidateProposal,
     CandidateTask,
+    CandidateOrigin,
     FrozenSpec,
     SearchPlan,
 )
@@ -16,16 +18,15 @@ from goal_plus.domain.shared_tools import (
     TOOL_DRAFTS_RELATIVE_PATH,
 )
 from goal_plus.domain.worker_policy import (
-    resolved_inner_agent_id,
-    global_evidence_mode,
     candidate_process_environment,
+    global_evidence_mode,
+    resolved_inner_agent_id,
     selected_model_for_slot,
     selected_model_provenance,
 )
-from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.ports.candidate_creation import (
-    CandidateMaterialization,
     CandidateCreationState,
+    CandidateMaterialization,
 )
 from goal_plus.ports.state import CandidateRecord, RunRecord
 from goal_plus.ports.workspace_creation import (
@@ -34,8 +35,12 @@ from goal_plus.ports.workspace_creation import (
 )
 
 
-def format_task_skill_listing(paths: list[str | Path]) -> str:
-    return ", ".join(f"{Path(path).parent.name}={path}" for path in paths) or "none"
+def candidate_spec_metadata(frozen: FrozenSpec) -> dict[str, str]:
+    return {
+        "frozen_spec_id": frozen.frozen_spec_id,
+        "spec_hash": frozen.spec_hash,
+        "llm_validation": frozen.spec.strategy.llm_validation,
+    }
 
 
 class CandidateCreation:
@@ -58,6 +63,7 @@ class CandidateCreation:
         *,
         expansion_source: ExpansionSource | None = None,
         source_record: CandidateRecord | None = None,
+        candidate_origin: CandidateOrigin | None = None,
     ) -> CandidateTask:
         request = CandidateMaterialization(
             run,
@@ -68,6 +74,8 @@ class CandidateCreation:
             slot,
             expansion_source,
             source_record,
+            None,
+            candidate_origin,
         )
         prepared = self.workspaces.prepare(request)
         if frozen.spec.workspace.provider == "thinkthread":
@@ -149,14 +157,14 @@ class CandidateCreation:
         if inner_agent == INNER_AGENT_COMMON:
             instructions.extend(
                 [
-                    "本次 host dispatch 只完成一个有界 attempt：分析当前状态、修改允许的 product 文件，并使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交验证。",
+                    "本次 host dispatch 只完成一个有界 attempt：分析当前状态、修改允许的 product 文件，并调用 goal_plus_search_run_verifier 提交验证；候选身份由宿主绑定。",
                     "用一句话 hypothesis 描述实际完成的尝试；只有 verifier 返回结果会结算为正式 Evidence。收到结果后更新简洁 handoff 并返回，不要自行开始下一轮。",
                 ]
             )
         else:
             instructions.extend(
                 [
-                    "Frozen verifier 是唯一权威验证路径。每项实质变更后，及时调用 goal_plus_search_run_verifier(agent_session_id=...)，使用当前 agent_session_id 并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。对初始化较慢但可能高收益的路线，不要仅凭未完成的本地试探判定失败；剩余时间和 verifier 时限允许时，至少完成一次权威验证后再决定是否放弃。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
+                    "Frozen verifier 是唯一权威验证路径。每项实质变更后，及时调用 goal_plus_search_run_verifier，并用一句话 hypothesis 描述实际尝试；候选身份由宿主绑定，只有 verifier 返回结果会结算为正式 Evidence 并贡献给共享搜索。对初始化较慢但可能高收益的路线，不要仅凭未完成的本地试探判定失败；剩余时间和 verifier 时限允许时，至少完成一次权威验证后再决定是否放弃。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
                     "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
                 ]
             )
@@ -178,9 +186,9 @@ class CandidateCreation:
             )
         elif evidence_mode == "auto":
             instructions.append(
-                "Global Evidence 使用 auto 模式：verifier 结算回包中的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
+                "Global Evidence 使用 auto 模式：verifier 结算回包会注入 global_evidence_update。首次 delivery=full 时 global_evidence_snapshot 是完整列表；后续 delivery=delta 时 snapshot 只含 added/changed，按 (candidate_id, iteration) 合并并删除 removed，delivery=unchanged 时保持本地列表不变。若压缩或恢复后没有可用的本地基线，调用 goal_plus_search_get_global_evidence 获取完整列表，再继续。"
             )
-        if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+        if frozen.spec.strategy.adaptive_search_enabled:
             instructions.append(
                 "Adaptive Search 已启用：LLM Verifier backlog 不阻塞当前 lane，按正常 candidate 循环继续。只有 runtime 或 host 明确拒绝、fence 或中断当前 lane 时才收尾；不要轮询 Verifier task 或 AllocationDecision，也不要自行评分、分配资源或启动派生 worker。"
             )
@@ -190,15 +198,16 @@ class CandidateCreation:
             )
         if task_skill_paths:
             instructions.append(
-                "当前 worktree 可见的 Git-tracked task-local Skills: "
-                f"{format_task_skill_listing(task_skill_paths)}。逐一完整读取这些 "
-                "SKILL.md，再按需读取各自目录内的相对资源并显式遵循；不要读取 "
-                "parent、global/plugin 或其他 candidate 的 Skill。"
+                "当前 worktree 可见 Git-tracked task-local Skills；以 "
+                "candidate_task.task_skill_paths 为唯一清单，按当前任务、角色和 provider "
+                "选择适用项。选中后完整读取其 SKILL.md，再按需读取同目录资源并显式遵循；"
+                "同一 session 中已完整加载且内容未变时复用，若上下文被截断、压缩、缺失或文件"
+                "发生变化则补读；不要读取 parent、global/plugin 或其他 candidate 的 Skill。"
             )
         else:
             instructions.append(
-                "当前 worktree 未发现 Git-tracked task-local Skills "
-                "(.agents/skills/*/SKILL.md)。"
+                "当前 worktree 未发现 Git-tracked task-local Skills；不要读取 "
+                "parent、global/plugin 或其他 candidate 的 Skill。"
             )
         share_out_dir = None
         if frozen.spec.shared_dir.enabled:
@@ -322,7 +331,9 @@ class CandidateCreation:
                     if expansion_source is not None
                     else None
                 ),
+                **candidate_spec_metadata(frozen),
             },
+            candidate_origin=request.candidate_origin,
         )
 
     def _thinkthread_task(
@@ -389,7 +400,7 @@ class CandidateCreation:
             )
         elif evidence_mode == "auto":
             instructions.append(
-                "Global Evidence 使用 auto 模式：在下一次 wake 后从已加载 context 使用最新共享 View；accepted receipt 不包含尚未产生的 Evidence。"
+                "Global Evidence 使用 auto 模式：下一次 wake 的 context 会注入 global_evidence_update。首次 delivery=full 时 snapshot 是完整列表；后续 delivery=delta 时按 (candidate_id, iteration) 合并 added/changed 并删除 removed，unchanged 保持本地列表不变。若压缩或恢复后没有可用的本地基线，调用 goal_plus_search_get_global_evidence 获取完整列表；accepted receipt 本身不包含尚未产生的 Evidence。"
             )
         instructions.extend(proposal.instructions)
         selected_model = (
@@ -469,7 +480,9 @@ class CandidateCreation:
                     if expansion_source is not None
                     else None
                 ),
+                **candidate_spec_metadata(frozen),
             },
+            candidate_origin=request.candidate_origin,
         )
 
     def materialize(self, request: CandidateMaterialization) -> CandidateRecord:

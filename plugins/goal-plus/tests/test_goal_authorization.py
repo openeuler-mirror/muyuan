@@ -89,6 +89,7 @@ def goal(goal_id="gp_0001", **updates):
 class MemoryGoals:
     records: dict[str, GoalPlusRecord] = field(default_factory=dict)
     sessions: dict[str, list[str]] = field(default_factory=dict)
+    events: dict[str, list[dict[str, object]]] = field(default_factory=dict)
 
     def goal_ids(self):
         return list(self.records)
@@ -101,6 +102,9 @@ class MemoryGoals:
 
     def session_run_ids(self, agent_session_id):
         return self.sessions.get(agent_session_id, [])
+
+    def read_events(self, goal_plus_id):
+        return self.events.get(goal_plus_id, [])
 
 
 @pytest.fixture
@@ -223,6 +227,42 @@ def test_direct_typed_successor_reference_requires_ownership(authorization):
     target = GoalToolTarget("goal_plus_search_create", goal_plus_id="gp_0001", source_run_id="run-b")
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
         authorization.require_active_target(target)
+
+
+@pytest.mark.parametrize("blocked_at,accepted", [
+    ("2026-09-05T00:00:02Z", True),
+    ("2026-09-05T00:00:01Z", False),
+    ("2026-09-05T00:00:00Z", False),
+    (None, False),
+])
+def test_fork_implicit_checkpoint_requires_post_batch_blocked_turn(blocked_at, accepted):
+    source = MemoryGoals(
+        records={"gp_0001": goal()},
+        events={"gp_0001": [
+            {"event_type": "search_linked", "payload": {"run_id": "run-a"}},
+            {"event_type": "status_changed", "event_id": "event-prepared",
+             "created_at": blocked_at, "payload": {"status": "blocked"}},
+        ]},
+    )
+    authorization = GoalAuthorization(source)
+    if accepted:
+        preparation = authorization.require_fork_checkpoint_preparation(
+            "run-a", batch_started_at="2026-09-05T00:00:01Z",
+        )
+        assert (preparation.goal_plus_id, preparation.run_id, preparation.event_id, preparation.created_at) == (
+            "gp_0001", "run-a", "event-prepared", blocked_at,
+        )
+    else:
+        with pytest.raises(RuntimeError, match="ForkPreparationRequired"):
+            authorization.require_fork_checkpoint_preparation(
+                "run-a", batch_started_at="2026-09-05T00:00:01Z",
+            )
+
+    source.events["gp_0001"] = [source.events["gp_0001"][0]]
+    with pytest.raises(RuntimeError, match="ForkPreparationRequired"):
+        authorization.require_fork_checkpoint_preparation(
+            "run-a", batch_started_at="2026-09-05T00:00:01Z",
+        )
 
 
 @pytest.mark.parametrize(

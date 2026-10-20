@@ -171,6 +171,8 @@ class PendingIntegrationRecord(SearchModel):
 
 
 class PromotionEvidence(SearchModel):
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     candidate_id: str
     selected_git_head: str | None = None
     git_head: str | None = None
@@ -182,6 +184,8 @@ class PromotionEvidence(SearchModel):
 
 
 class PromotionRecord(SearchModel):
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     """Prepared provider-native publication and its explicit apply result."""
 
     promotion_id: str = Field(min_length=1)

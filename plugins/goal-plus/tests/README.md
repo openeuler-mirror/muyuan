@@ -55,6 +55,28 @@ Each model-backed module has a standalone ST that exercises its real host path
 without a full Goal Plus run; select the Pi model with `ST_PI_MODEL`
 (`provider/model`, e.g. `zai/glm-5.3-flash`):
 
+Before launching a model-backed ST, inspect the models and authentication that
+are available in the current host environment. Do not infer a provider from a
+model name or copy a provider prefix from an old run:
+
+```bash
+# Pi: use an exact provider/model pair returned by this command.
+pi --offline --list-models
+pi --offline --list-models 'sub2api-openai/*'
+
+# If a specific provider is being considered, verify its credentials too.
+pi auth check --provider sub2api-openai
+
+# Codex: verify the active installation, profile and authentication.
+codex doctor
+```
+
+`ST_PI_MODEL` is an explicit override. If it is unset, the Pi test uses the
+local Pi default provider/model. An explicit value such as
+`openai-codex/gpt-5.6-luna` bypasses the default provider and requires that
+provider's own authentication; `pi --list-models` not showing it means it must
+not be used for the test.
+
 | Module | Command |
 | --- | --- |
 | Native session (RPC driver, two turns) | `ST_PI_MODEL=... pytest --run-system-tests -n 0 -q tests/st/test_st_native_session.py -k "pi"` |
@@ -85,17 +107,62 @@ python -m pytest --run-system-tests -n 0 -s -q tests/st_thinkthread/test_codex_b
 ```
 
 `ST_CODEX_PROFILE=<name>` overlays the user's `NAME.config.toml` Codex profile
-layer (model, provider, reasoning effort, and model catalog) so the bridge probe
-and the circle acceptance can run a non-default model such as DeepSeek without
-changing the base Codex config; set `CODEX_HOME` when the real config home is
-not the default. The catalog and system CA bundles are projected into the
-sandbox read allow-list automatically.
+layer (model, provider, reasoning effort, and model catalog) for the bridge and
+annotator probes without changing the base Codex config; set `CODEX_HOME` when
+the real config home is not the default. Circle uses the installed managed
+Profile instead; select a Codex config layer when refreshing it with
+`./install.sh --codex --thinkthread --codex-profile <name>`.
+The catalog and system CA bundles are projected into the sandbox read allow-list
+automatically.
 
 The probe itself still runs two retained Child turns without enabling Codex
 Search admission. Codex ThinkThread Search admission is supported and covered by
 the reduced circle acceptance in `tests/st_thinkthread/test_codex_circle_main.py`;
 see [Codex support scope](../docs/codex.md#支持范围与验证) for the verified scope
 and remaining gaps.
+
+The two ThinkThread Circle fork cases drive the real Main through a completed
+preparation turn, an explicit same-session resume, two provider-created forks, and two
+retained deliveries per Child. They verify actual native derivation and context/Fs
+identity, required fork audit and Annotation, exact settlement/selection/publication,
+Root apply and resource closure. Refresh both managed Profiles from the current
+checkout before running them; the fixture loads the installed release.
+
+For ThinkThread Circle and the TT fixture, `ST_PI_MODEL` and `ST_CODEX_MODEL`
+must be exact `provider/model` identities registered in ThinkThread. They are
+passed to `tt run --model` before `--`; do not copy provider aliases from direct
+Pi or Codex configuration. Inspect the TT registry and check the selected Profile:
+
+```bash
+tt model list --profile goal-plus-pi
+tt model list --profile goal-plus-codex
+tt model check "$TT_TEST_MODEL" --profile goal-plus-pi
+```
+
+Set `TT_TEST_MODEL` to an identity returned by the registry. `tt model check`
+checks local registration, credential references and Profile delegation without
+calling the model. Root model selection alone does not authorize Child spawn or
+fork: the exact model must also be in the Profile's delegation allowlist. Grant
+it with `tt model allow "$TT_TEST_MODEL" --profile goal-plus-pi` when needed,
+then repeat the check; use `goal-plus-codex` for Codex. `ST_PI_THINKING` and
+`ST_CODEX_REASONING_EFFORT` remain native agent arguments after `--`. An unset
+model override preserves the installed Profile/native model configuration.
+
+```bash
+uv run pytest --run-system-tests -n 0 -s -q \
+  'tests/st_thinkthread/test_circle_main.py::test_native_pi_main_completes_circle_thinkthread_apply[fork]'
+uv run pytest --run-system-tests -n 0 -s -q \
+  tests/st_thinkthread/test_codex_circle_main.py::test_native_codex_main_completes_fork_circle_thinkthread_apply
+```
+
+The runnable prompts and workspace preparation are in the
+[ThinkThread Circle example](../examples/circle-packing-thinkthread-apply/README.md#运行-fork-circle).
+Set `ST_THINKTHREAD_BASE_TMP` to a fresh directory under the checkout's `.tmp/`
+to place the workspace, ThinkThread state and logs there. The fixture preserves
+existing contents and refuses to reuse an existing workspace or state directory.
+These cases add native provider lifecycle proof to the existing Circle assertions;
+they do not replace the ordinary spawn/continuation scenarios or repeat common
+owner-boundary admission tests.
 
 ST requires `--run-system-tests`; `-m`, `-k`, and direct node selection alone
 never authorize a host launch or preflight. Keep the flag out of default
@@ -178,6 +245,14 @@ It does not install a package or change user configuration.
 `test_st_unified_main.py` separately exercises native Main with no GP control
 skills installed. Ordinary Goal completion does not establish Search orchestration
 or post-compaction visibility; these need their own execution evidence.
+Its `spec_revisions` cases ask one candidate, through Main, to create two
+successive evaluation revisions in the same run and native session. The frozen
+script stays unchanged while its metric and command arguments change. A peer
+reads all three versioned results through Global Evidence, retains the original
+contract, and verifies its own artifact. Assertions check the immutable version
+chain, actual scores, settlement/ledger bindings, peer-visible trace snapshot,
+and selection/promotion under the explicitly chosen final version. The older
+Goal-edit ST checks a different contract: refreezing and creating another run.
 Its Pi `circle_example_plain`, `circle_example_llm`, and `circle_example_adaptive`
 cases read the public Git apply prompts verbatim and retain their 300-second Goal
 budgets, with a 1200-second external watchdog. The separate
@@ -225,7 +300,7 @@ ST_CODEX_MODEL=gpt-5.6-luna \
   -v -s -rs
 
 # Pi ordinary-language guard plus exact native-command positive control
-ST_PI_MODEL=openai-codex/gpt-5.6-luna ST_PI_THINKING=xhigh \
+ST_PI_MODEL=sub2api-openai/gpt-5.6-luna ST_PI_THINKING=xhigh \
   pytest --run-system-tests -n 0 -m st_pi \
   -k "plain_prompt_cannot_start or exact_command_can_start or with_final_check_runs_pi_reviewer" \
   -v -s -rs
@@ -252,6 +327,11 @@ ST_PI_BINARY="$PWD/.goal-plus-dev/bin/pi-goal-plus" \
 
 # Codex revises one goal after result 1, refreezes, and completes result 2
 pytest --run-system-tests -n 0 -m "st and st_codex" -k goal_plus_spec_revision -v -s -rs
+
+# Main asks one candidate to revise its evaluation twice in the same run;
+# a peer reads all three versioned results through Global Evidence.
+uv run pytest --run-system-tests -n 0 -s -q \
+  tests/st/test_st_unified_main.py -k spec_revisions
 
 # Shared session return, explicit continuation and cleanup on both native hosts
 pytest --run-system-tests -n 0 -s -q tests/st/test_st_session_host.py -k same_session
@@ -293,7 +373,7 @@ Useful overrides:
 
 ```bash
 ST_CODEX_MODEL=gpt-5.6-luna pytest --run-system-tests -n 0 -m "st and st_codex" -v -s
-ST_PI_MODEL=openai-codex/gpt-5.6-luna ST_PI_THINKING=high \
+ST_PI_MODEL=sub2api-openai/gpt-5.6-luna ST_PI_THINKING=high \
   pytest --run-system-tests -n 0 -m "st and st_pi_rpc" -v -s
 ST_CODEX_TIMEOUT=3600 pytest --run-system-tests -n 0 -m "st and st_codex" -v -s
 ST_THINKTHREAD_TIMEOUT=1800 ST_THINKTHREAD_ANNOTATION_TIMEOUT=600 \
@@ -336,10 +416,7 @@ Python environment and its console scripts on `PATH`; no host installation is ch
 With explicit authorization, run the bounded VLIW role test serially:
 
 ```bash
-ST_PI_MODEL=sub2api-openai/gpt-5.6-sol ST_PI_THINKING=low \
-  pytest --run-system-tests -o addopts='' tests/st_thinkthread/test_vliw.py -q
-
-ST_PI_MODEL=zai/glm-5.3-flash ST_PI_THINKING=low \
+ST_PI_MODEL="$TT_TEST_MODEL" ST_PI_THINKING=low \
   pytest --run-system-tests -o addopts='' tests/st_thinkthread/test_vliw.py -q
 ```
 
@@ -351,8 +428,10 @@ Main planning is deterministic; this does not measure autonomous optimization or
 Main deadline handling. The annotator inspects immutable code; this single-lane
 case does not cover peer comparison or LLM Verifier/Adaptive Allocation.
 
-`ST_PI_MODEL` and `ST_PI_THINKING` now also apply to the TT fixture through native
-Pi arguments, inherited by Children. `ST_THINKTHREAD_PRESERVE_ON_FAILURE=1`
+Choose `TT_TEST_MODEL` from the ThinkThread registry and authorize it for
+`goal-plus-pi` as described above. `ST_PI_MODEL` selects the TT model resource;
+`ST_PI_THINKING` is a native Pi argument, inherited by Children.
+`ST_THINKTHREAD_PRESERVE_ON_FAILURE=1`
 preserves Runtime state after stopping Roots (also on success). Leave it unset
 for routine checks so teardown stops and removes the fixture's own Roots.
 For diagnostics, use a unique `--basetemp` under this plugin's `.tmp/`; keep the
@@ -372,8 +451,8 @@ same-session continuation, artifact-only promotion, unchanged source, reports,
 and closed scopes. This tests Search candidates; Pi Main remains a host process.
 The same Pi case runs on Linux (Bubblewrap) and macOS (Seatbelt); there is no
 separate macOS workflow. The shared `test_sandbox_launch.py` suite also executes
-real write/read-only, symlink/child, temporary-directory fallback and cleanup
-checks on either OS. Protected structured-inference tests run on both OSes.
+real write/read-only, symlink/child, checkout-local scratch and cleanup checks
+on either OS. Protected structured-inference tests run on both OSes.
 
 Run against available models and a prepared Pi development launcher:
 
@@ -423,10 +502,10 @@ deliveries; `[example]` reads the public
 [`pi-goal-prompt.md`](../examples/circle-packing-thinkthread-apply/pi-goal-prompt.md)
 verbatim and follows its global stop contract. Both check exact snapshot Evidence,
 Annotation, the highest verified score, publication/apply and cleanup. To run the
-public example with GLM and collect tool-contract diagnostics:
+public example with the selected TT model and collect tool-contract diagnostics:
 
 ```bash
-ST_PI_MODEL=zai/glm-5.3-flash ST_THINKTHREAD_PRESERVE_ON_FAILURE=1 \
+ST_PI_MODEL="$TT_TEST_MODEL" ST_THINKTHREAD_PRESERVE_ON_FAILURE=1 \
   pytest --run-system-tests -n 0 -s -q \
   'tests/st_thinkthread/test_circle_main.py::test_native_pi_main_completes_circle_thinkthread_apply[example]'
 ```
@@ -541,7 +620,7 @@ tests/
   test_*.py                 # default unit/integration/asset tests
   # example guards live in the per-example test modules
   _runtime_helpers.py       # project/spec builders and the in-process hook runner
-  _st_tmp.py                # scratch and evidence outside the checkout
+  _st_tmp.py                # scratch and evidence under checkout .tmp
   fixtures/                 # swe_bench_20212, signal_processing, ultra_smoke_codex
   st/
     conftest.py             # host preflight and prompt loading
@@ -559,6 +638,8 @@ tests/
     test_linux_v3.py        # serial Pi + ThinkThread V3 system tests
     unified_session_scenario.py # shared TT session lifecycle scenarios
     test_circle_main.py    # native Pi TT Main Circle
+    fork_circle.py  # exact fork provenance/audit acceptance for both Circle hosts
+    test_codex_circle_main.py # native Codex TT Circle and fork-to-apply
     test_codex_bridge.py   # diagnostic probe, not supported Codex TT Search
     test_vliw.py           # retained-turn VLIW validation
 ```
@@ -577,8 +658,8 @@ node:
 <st-scratch>/st-logs/<test-node>/<scenario>.log
 ```
 
-`<st-scratch>` defaults to a directory *outside* the checkout and is set by
-`GOAL_PLUS_ST_TMP`. Per-scenario run directories are removed once a test
+`<st-scratch>` defaults to `$PWD/.tmp/st`; set `GOAL_PLUS_ST_TMP` to relocate
+it. Per-scenario run directories are removed once a test
 finishes; failures keep theirs, and `GOAL_PLUS_TEST_DEBUG=1` keeps every run
 for debugging. This replaces `GOAL_PLUS_ST_KEEP_RUNS`. See `tests/_st_tmp.py`
 for the scratch location and the shared retention rules below.
@@ -588,9 +669,8 @@ Search evidence remains under `.gp/runs/`; host-specific logs are under
 correlate `run_id`, `candidate_id`, and `agent_session_id`.
 
 Verifier resource locks default to `.tmp/verifier-locks/` inside the checkout
-(`tests/conftest.py`), not the machine-wide `/tmp/goal-plus-verifier-locks/`,
-because on shared machines that `/tmp` directory belongs to whichever user
-created it first and blocks everyone else. Export
+(`tests/conftest.py`), so they use the same checkout-local scratch filesystem
+as the rest of the test run. Export
 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` to override.
 
 ## Pytest Configuration
@@ -610,17 +690,20 @@ a pytest warning if removal fails. ST log directories remain available in both m
 Ordinary fixtures receive a workspace inside a per-test container, so adjacent
 runtime state created through `tmp_path.parent` follows the same retention policy.
 
-Pytest still creates and rotates ordinary temporary session directories, keeping
-the latest three numbered sessions by default (`tmp_path_retention_count`). Keep
+Pytest creates ordinary temporary session directories under `$PWD/.tmp/pytest`
+by default (override with `GOAL_PLUS_TEST_TMP` or `--basetemp`) and keeps the
+latest three numbered sessions by default (`tmp_path_retention_count`). Keep
 `tmp_path_retention_policy=all`: the shared test hook handles per-test outcomes
 after teardown, later than pytest's built-in `failed` policy. Debug mode does not
-disable historical rotation. ST run directories live outside that rotation;
-retained ST failures and debug runs need manual cleanup when no longer needed.
-Forced termination can prevent cleanup. Direct `tempfile.TemporaryDirectory`
-contexts retain their own lifecycle; this switch does not change runtime cleanup.
+disable historical rotation. ST run directories use a separate `.tmp/st`
+subtree; retained failures and debug runs need manual cleanup when no longer
+needed. Forced termination can prevent cleanup. Direct
+`tempfile.TemporaryDirectory` contexts retain their own lifecycle; this switch
+does not change runtime cleanup.
 
-For filesystems with limited inodes, point `TMPDIR` (ordinary pytest directories)
-and `GOAL_PLUS_ST_TMP` (ST scratch space) at an existing directory on a data disk.
+For filesystems with limited inodes, point `GOAL_PLUS_TEST_TMP` (ordinary
+pytest directories) and `GOAL_PLUS_ST_TMP` (ST scratch space) at an existing
+directory on a data disk.
 
 `pytest.ini` defines markers. `tests/conftest.py` skips `integration` and
 `example` unless their marker is selected, and gates every `st` / `st_*` case

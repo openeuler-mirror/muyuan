@@ -31,7 +31,7 @@ class AdaptiveAdmission:
             )
         run = self.source.read_run(record.task.run_id)
         frozen = self.source.read_frozen_spec(run.frozen_spec_id)
-        if frozen.spec.strategy.orchestration_mode != "adaptive_search":
+        if not frozen.spec.strategy.adaptive_search_enabled:
             return
         active_retirements = {
             candidate_id

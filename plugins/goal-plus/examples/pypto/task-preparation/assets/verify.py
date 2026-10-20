@@ -5,11 +5,22 @@ import importlib
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import torch
 from golden import run
 
 import contract
+
+
+def _temporary_root() -> Path:
+    root = Path(
+        os.environ.get("GOAL_PLUS_VERIFIER_TMPDIR")
+        or os.environ.get("GOAL_PLUS_TMPDIR")
+        or Path.cwd() / ".tmp"
+    ).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 def guarded_comparisons(comparisons, checked):
@@ -47,7 +58,9 @@ def main():
     os.environ["PYPTO_BENCH"] = "0"
     try:
         fn = getattr(importlib.import_module("kernel"), contract.ENTRY)
-        with tempfile.TemporaryDirectory(prefix="pypto-verify-", dir=os.environ.get("GOAL_PLUS_VERIFIER_TMPDIR")) as build:
+        with tempfile.TemporaryDirectory(
+            prefix="pypto-verify-", dir=_temporary_root()
+        ) as build:
             os.environ["PYPTO_PROG_BUILD_DIR"] = build
             for name in contract.CASES if args.case == "all" else [args.case]:
                 print(f"[CASE] {name}", flush=True)

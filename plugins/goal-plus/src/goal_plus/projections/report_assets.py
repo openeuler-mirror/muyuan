@@ -136,7 +136,7 @@ main.wrap { overflow-x: clip; }
 .section-kicker { margin-bottom: 14px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -295,6 +295,7 @@ main.wrap { overflow-x: clip; }
 }
 .task-tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .task-panel { margin-bottom: 26px; }
+.task-panel, .task-panel [id] { scroll-margin-top: 60px; }
 .js .task-panel[hidden] { display: none; }
 .task-head { padding: 20px; border-bottom: 1px solid var(--border); background: var(--surface-subtle); }
 .task-title-line { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
@@ -321,6 +322,38 @@ th { background: var(--surface-subtle); color: var(--muted); font-size: 10px; te
 th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
 tbody tr:last-child td { border-bottom: 0; }
 .selected-row td:first-child { box-shadow: inset 3px 0 0 var(--success); }
+.candidate-evidence-table, .worker-sessions-table { width: max-content; min-width: 100%; table-layout: fixed; }
+.candidate-evidence-table .candidate-col-candidate { width: 132px; }
+.candidate-evidence-table .candidate-col-contract { width: 220px; }
+.candidate-evidence-table .candidate-col-status,
+.candidate-evidence-table .candidate-col-allocation { width: 116px; }
+.candidate-evidence-table .candidate-col-depth { width: 70px; }
+.candidate-evidence-table .candidate-col-source,
+.candidate-evidence-table .candidate-col-quality { width: 110px; }
+.candidate-evidence-table .candidate-col-final-score,
+.candidate-evidence-table .candidate-col-best-score,
+.candidate-evidence-table .candidate-col-process { width: 95px; }
+.candidate-evidence-table .candidate-col-iterations { width: 90px; }
+.candidate-evidence-table .candidate-col-sessions { width: 150px; }
+.candidate-evidence-table .candidate-col-files { width: 190px; }
+.candidate-evidence-table .candidate-col-hypothesis { width: 330px; }
+.worker-sessions-table .session-col-session { width: 180px; }
+.worker-sessions-table .session-col-dispatch,
+.worker-sessions-table .session-col-harness { width: 95px; }
+.worker-sessions-table .session-col-candidate { width: 105px; }
+.worker-sessions-table .session-col-runtime-provider,
+.worker-sessions-table .session-col-tokens,
+.worker-sessions-table .session-col-injected { width: 145px; }
+.worker-sessions-table .session-col-model-provider,
+.worker-sessions-table .session-col-terminal { width: 150px; }
+.worker-sessions-table .session-col-model { width: 220px; }
+.worker-sessions-table .session-col-duration,
+.worker-sessions-table .session-col-detail { width: 100px; }
+.worker-sessions-table .session-col-cost { width: 130px; }
+.worker-sessions-table .session-col-verifier { width: 110px; }
+.worker-sessions-table .session-col-evidence { width: 125px; }
+.worker-sessions-table .session-col-last-evidence,
+.worker-sessions-table .session-col-last-detail { width: 170px; }
 .evidence-view-toolbar {
   display: flex;
   align-items: end;
@@ -349,18 +382,22 @@ tbody tr:last-child td { border-bottom: 0; }
 .evidence-view-filter input { width: 220px; }
 .evidence-view-count { min-width: 82px; padding-bottom: 8px; color: var(--muted); font-size: 11px; text-align: right; }
 .evidence-view-scroll { max-height: 680px; border-radius: 0 0 6px 6px; overflow: auto; scrollbar-gutter: stable; }
-.evidence-view-table { min-width: 1880px; table-layout: fixed; }
+.evidence-view-table { width: max-content; min-width: 2640px; table-layout: fixed; }
 .evidence-view-table thead { position: sticky; top: 0; z-index: 3; }
-.evidence-view-table th:nth-child(1) { width: 178px; }
-.evidence-view-table th:nth-child(2) { width: 94px; }
-.evidence-view-table th:nth-child(3) { width: 74px; }
-.evidence-view-table th:nth-child(4) { width: 90px; }
-.evidence-view-table th:nth-child(5) { width: 112px; }
-.evidence-view-table th:nth-child(6) { width: 250px; }
-.evidence-view-table th:nth-child(7) { width: 330px; }
-.evidence-view-table th:nth-child(8) { width: 270px; }
-.evidence-view-table th:nth-child(9) { width: 190px; }
-.evidence-view-table th:nth-child(10) { width: 150px; }
+.evidence-view-table .evidence-col-time { width: 178px; }
+.evidence-view-table .evidence-col-candidate { width: 104px; }
+.evidence-view-table .evidence-col-iteration { width: 112px; }
+.evidence-view-table .evidence-col-contract { width: 250px; }
+.evidence-view-table .evidence-col-metric { width: 154px; }
+.evidence-view-table .evidence-col-score { width: 122px; }
+.evidence-view-table .evidence-col-quality { width: 210px; }
+.evidence-view-table .evidence-col-settlement { width: 132px; }
+.evidence-view-table .evidence-col-attempt { width: 274px; }
+.evidence-view-table .evidence-col-objective { width: 314px; }
+.evidence-view-table .evidence-col-toolization { width: 304px; }
+.evidence-view-table .evidence-col-published-tools { width: 304px; }
+.evidence-view-table .evidence-col-adoption { width: 264px; }
+.evidence-view-table .evidence-col-artifact { width: 152px; }
 .evidence-view-table tbody tr:hover td { background: var(--accent-soft); }
 .evidence-view-table .official-evidence-row td { background: #f2f8fa; }
 .evidence-view-table .official-evidence-row:hover td { background: #e2f0f3; }
@@ -391,8 +428,13 @@ pre { max-height: 600px; overflow: auto; white-space: pre-wrap; overflow-wrap: a
 .warning-list { margin: 0; padding-left: 18px; }
 .warning-list li + li { margin-top: 6px; }
 .footnote { margin: 18px 0 0; color: var(--muted); font-size: 11px; }
+.transcript-navigation { margin-top: 6px; }
+.transcript-context > summary { cursor: pointer; color: var(--accent); }
+.transcript-context ul { margin: 6px 0 0; padding-left: 14px; }
+.transcript-context li + li { margin-top: 4px; }
+.transcript-event-link, .transcript-coverage { display: block; margin-top: 4px; }
 @media (max-width: 1100px) {
-  .kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .two-column { grid-template-columns: 1fr; }
   .task-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -444,7 +486,7 @@ pre { max-height: 600px; overflow: auto; white-space: pre-wrap; overflow-wrap: a
   .timeline { width: 100% !important; min-width: 0; }
   .timeline-row:first-child, .timeline-label { position: static; }
   .metric-lens-toolbar { display: none; }
-  .kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .kpi { min-height: 70px; padding: 10px; }
   .metric-value { font-size: 16px; }
 }
@@ -787,12 +829,29 @@ REPORT_SCRIPT = """
   buttons.forEach(function (button) {
     button.addEventListener('click', function () { activate(button.dataset.taskTarget, true); });
   });
+  function revealFragment() {
+    var fragment;
+    try { fragment = decodeURIComponent(location.hash.slice(1)); } catch (_) { return false; }
+    var target = document.getElementById(fragment);
+    if (!target) return false;
+    var panel = target.closest('.task-panel');
+    if (panel) activate(panel.dataset.runId, false);
+    var ancestor = target;
+    while (ancestor) {
+      if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+      ancestor = ancestor.parentElement;
+    }
+    target.scrollIntoView({block: 'start'});
+    return true;
+  }
   if (buttons.length) {
     var requested = location.hash.indexOf('#task-') === 0 ? location.hash.slice(6) : null;
     var initial = buttons.some(function (button) { return button.dataset.taskTarget === requested; })
       ? requested : buttons.find(function (button) { return button.getAttribute('aria-selected') === 'true'; }).dataset.taskTarget;
     activate(initial, false);
   }
+  revealFragment();
+  window.addEventListener('hashchange', revealFragment);
   renderVisibleTrajectories();
 
   window.addEventListener('beforeprint', function () {

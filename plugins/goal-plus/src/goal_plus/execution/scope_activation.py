@@ -24,6 +24,7 @@ class ScopeActivation:
         owner_session_id: str,
         attachment: ScopeAttachment | None = None,
         native_agent_config: dict[str, Any] | None = None,
+        native_session_file: str | None = None,
         activation_id: str | None = None,
         activation_nonce: str | None = None,
     ) -> ScopeRecord:
@@ -34,6 +35,8 @@ class ScopeActivation:
         if activation_nonce is not None and not activation_nonce:
             raise ValueError("activation_nonce must be non-empty")
         config = normalize_native_agent_config(agent_harness, native_agent_config)
+        if native_session_file is not None and not native_session_file:
+            raise ValueError("native_session_file must be non-empty")
         scope_key = f"{agent_harness}\0{owner_session_id}\0{activation_id or ''}"
         if activation_nonce is not None:
             scope_key += f"\0{activation_nonce}"
@@ -78,6 +81,15 @@ class ScopeActivation:
                         raise RuntimeError(
                             f"execution scope {scope_id} native agent config changed"
                         )
+                    stored_session_file = scope.get("native_session_file")
+                    if (
+                        native_session_file is not None
+                        and stored_session_file is not None
+                        and stored_session_file != native_session_file
+                    ):
+                        raise RuntimeError(
+                            f"execution scope {scope_id} native session file changed"
+                        )
                 else:
                     now = self.clock.timestamp()
                     scope = {
@@ -103,6 +115,8 @@ class ScopeActivation:
                         scope["resume_barrier_id"] = activation_nonce
                 if config is not None:
                     scope["native_agent_config"] = config
+                if native_session_file is not None:
+                    scope["native_session_file"] = native_session_file
                 if (
                     attachment is not None
                     and attachment.identity not in scope["run_ids"]

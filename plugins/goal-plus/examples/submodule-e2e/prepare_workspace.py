@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -80,7 +81,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.output is None:
-        with tempfile.TemporaryDirectory(prefix="goal-plus-submodule-e2e-") as directory:
+        temporary_root = Path(
+            os.environ.get("GOAL_PLUS_TMPDIR") or Path.cwd() / ".tmp"
+        ).expanduser()
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="goal-plus-submodule-e2e-", dir=temporary_root
+        ) as directory:
             print(json.dumps(create_workspace(Path(directory)), indent=2, sort_keys=True))
     else:
         print(json.dumps(create_workspace(args.output), indent=2, sort_keys=True))

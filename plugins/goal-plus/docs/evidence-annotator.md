@@ -24,8 +24,8 @@ run-scoped drainer 进程，资源登记到所属 scope。普通 verifier、选�
 promotion 不等待这个进程；若冻结 run 要求 supplemental evaluation，selection 会在所有
 AnnotationTask 成功发布补充评价前保持 `selection_blocked`。
 
-带 `agent_session_id` 的 worker process-verifier 调用会创建 annotation task。启用
-Adaptive Search 时，parent process verification 也会创建 annotation task；Annotation 与
+worker 的 process-verifier 调用会创建 annotation task；candidate-facing schema 不要求模型
+传 `agent_session_id`，当前 session 由可信宿主绑定。启用 Adaptive Search 时，parent process verification 也会创建 annotation task；Annotation 与
 Verifier task 独立推进，不构成 Allocation 前置依赖。promotion verification 不会创建 View。
 
 ## 端到端流程
@@ -347,7 +347,7 @@ annotation 内容或 verifier settlement：
 | 模式 | Candidate 可见行为 |
 | --- | --- |
 | `manual` | 默认；candidate 显式调用 `goal_plus_search_get_global_evidence` 读取共享 run Evidence |
-| `auto` | verifier 成功返回时额外注入 `global_evidence_snapshot` |
+| `auto` | verifier 成功返回时额外注入 `global_evidence_snapshot`；首次为完整快照，后续用 `global_evidence_update` 传递新增、变更、删除或 unchanged 状态 |
 | `independent` | 不自动注入，显式读取也只返回调用 candidate 自己的 Evidence |
 
 Annotator 仍按 run 处理所有 worker Evidence；`independent` 只是 candidate-facing 投影过滤。
@@ -406,7 +406,7 @@ monitor 未提供 annotation 内部状态时，再检查：
 
 | 现象 | 检查方向 |
 | --- | --- |
-| 没有 task 文件 | 是否是 parent/promotion verifier，或 worker 调用是否缺少 `agent_session_id` |
+| 没有 task 文件 | 是否是 parent/promotion verifier，或 worker 是否实际调用了 process verifier |
 | `pending` 长时间不变 | run 是否仍允许 annotation、自动 kick 是否被禁用、drainer PID 是否有效 |
 | `retry_wait` | `next_attempt_at`、网络/限流错误和剩余 outer deadline |
 | `terminal_error` | `last_error`、`error_fingerprint`、profile 冲突、Artifact View 或输出 schema |

@@ -50,7 +50,7 @@ def prepare_circle(project: Path, model: str, reasoning_effort: str) -> dict[str
     spec["edit_surface"]["deny"] += ["spec.json", "candidate-hints/**", ".gitignore"]
     spec["workspace"] = {"provider": "git_worktree", "promotion_mode": "artifact_only"}
     spec["strategy"] = {
-        "name": "agent_guided", "orchestration_mode": "parallel_loops",
+        "name": "agent_guided", "initial_context": "fresh",
          "inner_agent": "common",
         "models": [{"model": model, "reasoning_effort": reasoning_effort}],
         "evidence_annotator": { "model": model,

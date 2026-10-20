@@ -192,3 +192,39 @@ def test_copy_backend_uses_the_same_reference_contract(tmp_path: Path) -> None:
     assert (switched.access.root / "initial_program.py").read_text(
         encoding="utf-8"
     ) == "VALUE = 5\n"
+
+
+def test_thinkthread_reference_is_rejected_before_materialization_and_hidden(tmp_path, monkeypatch):
+    import asyncio
+    from fastmcp import Client
+    from goal_plus.server import create_mcp
+    from tests._thinkthread_candidates import bind_candidate, verify_candidate
+    from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
+
+    project = make_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = IntegratedAgentPosix(project)
+    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    [task] = runtime.start_batch(run_id, plan.plan_id)
+    session = bind_candidate(runtime, client, run_id, task.candidate_id)
+    verify_candidate(runtime, client, session)
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    operations = list(client.operations)
+
+    with pytest.raises(PermissionError, match="ReferenceUnavailable"):
+        runtime.open_reference_workspace(session.agent_session_id, task.candidate_id, 1)
+    assert runtime.references.list(run_id) == []
+    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
+    assert client.operations == operations
+
+    async def catalog():
+        async with Client(create_mcp(runtime.root_dir, caller_role="candidate",
+                                    caller_agent_session_id=session.agent_session_id)) as mcp:
+            names = {tool.name for tool in await mcp.list_tools()}
+            assert "goal_plus_search_reference_open" not in names
+            assert "goal_plus_search_get_global_evidence" in names
+    asyncio.run(catalog())

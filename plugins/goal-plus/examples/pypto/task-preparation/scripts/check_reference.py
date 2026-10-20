@@ -20,6 +20,16 @@ def materialize(specs):
     return {s.name: s.to_python() if isinstance(s, ScalarSpec) else s.create_tensor() for s in specs}
 
 
+def _temporary_root() -> Path:
+    root = Path(
+        os.environ.get("GOAL_PLUS_VERIFIER_TMPDIR")
+        or os.environ.get("GOAL_PLUS_TMPDIR")
+        or Path.cwd() / ".tmp"
+    ).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", type=Path, required=True)
@@ -81,7 +91,9 @@ def main():
     print("MISSING_OUTPUT_CHECKS_REJECTED", flush=True)
     if not args.reference_only:
         os.environ["PYPTO_BENCH"] = "0"
-        with tempfile.TemporaryDirectory(prefix="pypto-acceptance-") as build:
+        with tempfile.TemporaryDirectory(
+            prefix="pypto-acceptance-", dir=_temporary_root()
+        ) as build:
             os.environ["PYPTO_PROG_BUILD_DIR"] = build
             result = verify.check_case(fn, case)
             print(json.dumps(result), flush=True)

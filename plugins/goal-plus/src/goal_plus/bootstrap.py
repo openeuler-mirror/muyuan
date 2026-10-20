@@ -364,6 +364,7 @@ def build_selection(
         annotation_admission=annotation_admission,
         authorization=settlement.authorization,
         verifier=verifier,
+        clock=SystemClock(),
         persist_run=settlement.persist_run,
     )
 
@@ -772,6 +773,7 @@ from goal_plus.application.candidate_context import CandidateContext
 from goal_plus.application.search_queries import SearchQueries
 from goal_plus.application.evidence_reads import EvidenceReads
 from goal_plus.application.candidate_trace import CandidateTrace
+from goal_plus.application.candidate_spec import CandidateSpecRevisions
 from goal_plus.application.report import Report
 from goal_plus.application.verifier import VerifierWorkflow
 
@@ -782,6 +784,7 @@ class SearchServices:
     thinkthread_attempt_io: Callable[[AgentPosixSdkClient | None], ThinkThreadAttemptIO]
     verifiers: LocalVerifiers
     candidate_sessions: CandidateSessions
+    candidate_spec_revisions: CandidateSpecRevisions
     research: SearchResearch
     search_run: SearchRun
     artifacts: CandidateArtifacts
@@ -943,6 +946,10 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
     return SearchServices(
         verifiers=verifiers,
         candidate_sessions=candidate_sessions,
+        candidate_spec_revisions=CandidateSpecRevisions(
+            state=settlement.state, specs=search_bootstrap.state, sessions=candidate_sessions,
+            authorization=goal_authorization, clock=SystemClock(),
+        ),
         research=research,
         search_run=search_run,
         artifacts=artifacts,

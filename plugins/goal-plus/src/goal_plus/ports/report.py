@@ -52,6 +52,8 @@ class ReportReferenceImpact:
 class ReportTaskInputs:
     run: RunRecord
     frozen: FrozenSpec
+    candidate_specs: dict[str, FrozenSpec]
+    frozen_specs: dict[str, FrozenSpec]
     plans: list[SearchPlan]
     candidates: list[CandidateRecord]
     sessions: list[AgentSessionRecord]
@@ -65,6 +67,7 @@ class ReportTaskInputs:
 class MarkdownReportInputs:
     run: RunRecord
     frozen: FrozenSpec
+    candidate_specs: dict[str, FrozenSpec]
     candidates: list[CandidateRecord]
     plans: list[SearchPlan]
     sessions: list[AgentSessionRecord]
@@ -95,3 +98,4 @@ class ReportOutput(Protocol):
         self, inputs: MarkdownReportInputs, lifecycle: RunRecord | None = None
     ) -> Path: ...
     def write_html(self, run_id: str) -> None: ...
+    def write_bundle(self, run_id: str) -> Path: ...

@@ -455,6 +455,7 @@ class SearchRun:
             run.state = RunState.WAITING_FOR_WORKERS
             plan.status = "started"
             plan.started_candidate_ids = [task.candidate_id for task in tasks]
+            plan.started_at = self.clock.timestamp()
             self.state.write_plan(plan)
             self.persist(run)
 
@@ -635,7 +636,11 @@ class SearchRun:
                     slot=slot,
                     intent=hypothesis,
                     hypothesis=hypothesis,
-                    metadata={"strategy": frozen.spec.strategy.orchestration_mode},
+                    metadata={
+                        "strategy": frozen.spec.strategy.name,
+                        "initial_context": frozen.spec.strategy.initial_context,
+                        "adaptive_search": frozen.spec.strategy.adaptive_search_enabled,
+                    },
                 )
             )
 

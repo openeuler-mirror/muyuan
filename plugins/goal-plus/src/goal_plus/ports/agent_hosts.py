@@ -26,6 +26,7 @@ class AgentExecutionCapabilities:
     supports_reasoning_effort: bool = False
     supports_service_tier: bool = False
     supports_usage_metadata: bool = False
+    supports_fork: bool = False
     supported_workspace_providers: frozenset[WorkspaceProvider] = frozenset()
     supported_inner_agents: frozenset[str] = frozenset()
     session_control: SessionControlTools = field(default_factory=SessionControlTools)

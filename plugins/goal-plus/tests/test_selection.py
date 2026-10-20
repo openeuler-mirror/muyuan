@@ -278,8 +278,9 @@ def test_quality_source_rejects_a_record_from_another_score_contract() -> None:
     assert source.resolve(_selection_option(subject)).state == "unavailable"
 
 
-def _exact_selection_run(tmp_path, scores):
+def _exact_selection_run(tmp_path, scores, *, fork=False):
     from goal_plus.domain.search import SearchSpec
+    from goal_plus.ports.session import ProviderDispatchReceipt
     from goal_plus.runtime import FileSearchRuntime
     from tests._runtime_helpers import make_project, spec_for
 
@@ -290,6 +291,12 @@ def _exact_selection_run(tmp_path, scores):
     )
     spec_data = spec_for(project, max_parallel=2).model_dump(mode="json")
     spec_data["workspace"]["provider"] = "git_worktree"
+    if fork:
+        spec_data["strategy"] = {
+            "name": "random",
+            "initial_context": "fork",
+            "llm_validation": "required",
+        }
     spec = SearchSpec.model_validate(spec_data)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
@@ -300,6 +307,23 @@ def _exact_selection_run(tmp_path, scores):
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     candidates = runtime.start_batch(run_id, plan.plan_id)
+    if fork:
+        fork = runtime.candidate_sessions.prepare_dispatch_group(
+            run_id, "main-native", "turn-7", "completed_turn",
+        )
+        for branch in fork.branches:
+            runtime.candidate_sessions.record_dispatch_receipt(
+                run_id,
+                branch.dispatch_target_index,
+                ProviderDispatchReceipt(
+                    f"branch-{branch.dispatch_target_index}",
+                    fork.parent_native_session_id,
+                    branch.binding.workspace,
+                    "started",
+                    context_projection_digest="c" * 64,
+                ),
+            )
+        runtime.candidate_sessions.finish_dispatch_group(run_id)
     reports = []
     for candidate, score in zip(candidates, scores, strict=True):
         (candidate.workspace / "initial_program.py").write_text(
@@ -308,6 +332,101 @@ def _exact_selection_run(tmp_path, scores):
         )
         reports.append(runtime.run_verifier(run_id, candidate.candidate_id))
     return runtime, run_id, candidates, reports
+
+
+def _complete_fork_audits(workflow, run_id):
+    from tests.test_llm_verifier import invocation
+
+    while task := workflow.claim_task("fork-audit", 60, run_id=run_id):
+        workflow.complete_task(task.task_id, {
+            "quality_score": 0.8, "scores": None,
+            "score_rationales": {"quality_score": "Exact fork audit"},
+        }, invocation(), worker_id=task.lease.worker_id, attempt=task.attempts)
+        workflow.acknowledge_delivery(task.task_id)
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "runtime_provider", "main_session_id", "checkpoint_kind",
+        "workspace_attachment", "workspace_hash", "context_projection_digest",
+        "parent_frozen_spec_id", "missing_base", "extra_artifact", "duplicate_artifact",
+    ],
+)
+def test_required_fork_audit_rejects_shared_context_mismatch(tmp_path, mismatch):
+    runtime, run_id, candidates, _reports = _exact_selection_run(
+        tmp_path, [1, 2], fork=True,
+    )
+    workflow = runtime.selection.verifier
+    task = workflow.list_tasks(run_id)[0]
+    audit = task.input.dispatch_audit_context
+    assert audit is not None
+    if mismatch == "runtime_provider":
+        updates = {"runtime_provider": "thinkthread"}
+    elif mismatch == "workspace_attachment":
+        updates = {"workspace_attachment": audit.workspace_attachment.model_copy(
+            update={"path": candidates[1].workspace},
+        )}
+    elif mismatch == "missing_base":
+        assert len(audit.artifact_refs) == 2
+        updates = {"artifact_refs": audit.artifact_refs[:1]}
+    elif mismatch in {"extra_artifact", "duplicate_artifact"}:
+        extra = audit.artifact_refs[0]
+        if mismatch == "extra_artifact":
+            extra = extra.model_copy(update={"id": "f" * 40})
+        updates = {"artifact_refs": (*audit.artifact_refs, extra)}
+    else:
+        updates = {mismatch: "another-context"}
+    changed_input = task.input.model_copy(update={
+        "dispatch_audit_context": audit.model_copy(update=updates),
+    })
+    # A projection bug can commit the same incorrect provenance to both
+    # outbound objects; their exact equality alone cannot authorize selection.
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    iteration = record.iterations[0]
+    iteration.verifier_submission = iteration.verifier_submission.model_copy(
+        update={"input": changed_input},
+    )
+    runtime.candidate_creation.state.write_candidate(run_id, record)
+    workflow.state.write_verifier_task(task.model_copy(update={"input": changed_input}))
+    _complete_fork_audits(workflow, run_id)
+    before = [runtime.list_iterations(run_id, c.candidate_id) for c in candidates]
+
+    with pytest.raises(RuntimeError, match="required fork LLM audit failed"):
+        runtime.select(run_id)
+
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.state == "selection_blocked"
+    assert run.selected_candidate_id is None
+    assert run.fork.branches[0].audit_state == "failed"
+    assert [runtime.list_iterations(run_id, c.candidate_id) for c in candidates] == before
+
+
+def test_required_fork_audit_waits_and_retains_settlement_input_after_close(tmp_path):
+    from goal_plus.bootstrap import build_settlement_verifier
+
+    runtime, run_id, candidates, _reports = _exact_selection_run(
+        tmp_path, [1, 2], fork=True,
+    )
+    before = [runtime.list_iterations(run_id, c.candidate_id) for c in candidates]
+    with pytest.raises(RuntimeError, match="required fork LLM audit is pending"):
+        runtime.select(run_id)
+    assert runtime.search_run.state.read_run(run_id).selected_candidate_id is None
+    _complete_fork_audits(runtime.selection.verifier, run_id)
+    tasks = runtime.selection.verifier.list_tasks(run_id)
+    for branch in runtime.search_run.state.read_run(run_id).fork.branches:
+        runtime.candidate_sessions.record_dispatch_close(
+            branch.agent_session_id, branch.provider_session_id,
+        )
+    assert all(b.closed_at for b in runtime.search_run.state.read_run(run_id).fork.branches)
+
+    build_settlement_verifier(runtime.root_dir).replay(run_id)
+    selected = runtime.select(run_id)
+
+    assert selected["selected_candidate_id"] == candidates[1].candidate_id
+    assert all(b.audit_state == "completed" for b in runtime.search_run.state.read_run(run_id).fork.branches)
+    assert runtime.selection.verifier.list_tasks(run_id) == tasks
+    assert [runtime.list_iterations(run_id, c.candidate_id) for c in candidates] == before
 
 
 def _controller_directive(runtime, run_id, candidate_id, *, receipt="1" * 64):

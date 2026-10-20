@@ -27,17 +27,32 @@ from goal_plus.ports.session import NativeMainCaller
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
-@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
-def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_harness):
+@pytest.mark.parametrize("agent_harness,owner_alias", [("codex", False), ("pi", False), ("pi", True)])
+@pytest.mark.parametrize("scope_attachment", ["goal", "search"])
+def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_harness, owner_alias, scope_attachment):
     root = tmp_path / ".gp"
     goal = start_host_verified_goal(root, tmp_path, agent_harness=agent_harness)
     runtime = FileGoalPlusRuntime(root)
+    attachment_id = goal.goal_plus_id
+    if scope_attachment == "search":
+        project = make_project(tmp_path)
+        search = FileSearchRuntime(root)
+        frozen = search.freeze_spec(
+            spec_for(project), [project / "evaluator.py"],
+            goal_plus_id=goal.goal_plus_id, agent_harness=agent_harness,
+        )
+        attachment_id = search.create_run(frozen.frozen_spec_id)
+        runtime.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, attachment_id)
+    owner_id = f"{goal.goal_plus_id}:{tmp_path}" if owner_alias else goal.active_session.session_id
+    native_config = ({"model": "native-main/example-model", "reasoning_effort": "low"} if agent_harness == "codex"
+                     else {"model_pattern": "native-main/example-model", "thinking_level": "low"})
     scope = ensure_execution_scope(
         root_dir=root,
         agent_harness=agent_harness,
-        owner_session_id=goal.active_session.session_id,
-        run_id=goal.goal_plus_id,
+        owner_session_id=owner_id,
+        run_id=attachment_id,
         activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+        native_agent_config=native_config,
     )
     resume_before_close = goal.host_command_invocations[0].model_copy(
         update={"action": "resume", "invocation_id": f"resume-before-close:{agent_harness}"}
@@ -66,6 +81,8 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
     assert reused["scope_id"] == rebound["scope_id"]
     assert rebound["state"] == "open"
     assert rebound["activation_id"] == f"{goal.goal_plus_id}:{goal.control.version}"
+    assert rebound["owner_session_id"] == owner_id
+    assert rebound["native_agent_config"] == native_config
     assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["state"] == "closed"
 
     runtime.control_from_host_command(
@@ -79,6 +96,66 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
     )["state"] == "closed"
     with pytest.raises(RuntimeError, match="new work is fenced"):
         host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_native_goal_role_rejects_open_scope_from_old_activation(tmp_path, agent_harness):
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, tmp_path, agent_harness=agent_harness)
+    scope = ensure_execution_scope(
+        root_dir=root, agent_harness=agent_harness, owner_session_id=goal.active_session.session_id,
+        run_id=goal.goal_plus_id, activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+    )
+    runtime = FileGoalPlusRuntime(root)
+    for action in ("pause", "resume"):
+        runtime.control_from_host_command(goal.goal_plus_id, invocation=goal.host_command_invocations[0].model_copy(
+            update={"action": action, "invocation_id": f"open-scope:{action}"},
+        ))
+    before = execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])
+    host = NativeDelegationHost(root, agent_harness=agent_harness, caller=lambda: goal.active_session.session_id)
+    with pytest.raises(PermissionError, match="current Main activation"):
+        host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+    assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"]) == before
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_native_goal_role_reuses_newer_search_scope_config(tmp_path, agent_harness):
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, tmp_path, agent_harness=agent_harness)
+    goals = FileGoalPlusRuntime(root)
+    project = make_project(tmp_path)
+    search = FileSearchRuntime(root)
+    frozen = search.freeze_spec(
+        spec_for(project), [project / "evaluator.py"],
+        goal_plus_id=goal.goal_plus_id, agent_harness=agent_harness,
+    )
+    run_id = search.create_run(frozen.frozen_spec_id)
+    goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    owner_id = goal.active_session.session_id if agent_harness == "codex" else f"{goal.goal_plus_id}:{tmp_path}"
+    config = ({"model": "native-main/example-model", "reasoning_effort": "low"} if agent_harness == "codex"
+              else {"model_pattern": "native-main/example-model", "thinking_level": "low"})
+    old = ensure_execution_scope(
+        root_dir=root, agent_harness=agent_harness, owner_session_id=owner_id,
+        run_id=goal.goal_plus_id, activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+        native_agent_config=config,
+    )
+    closed = close_execution_scope(root_dir=root, scope_id=old["scope_id"], reason="interrupted")
+    resumed = goals.control_from_host_command(goal.goal_plus_id, invocation=goal.host_command_invocations[0].model_copy(
+        update={"action": "resume", "invocation_id": "new-search-generation"},
+    ))
+    current_config = {**config, "reasoning_effort" if agent_harness == "codex" else "thinking_level": "high"}
+    current = ensure_execution_scope(
+        root_dir=root, agent_harness=agent_harness, owner_session_id=owner_id,
+        run_id=run_id, activation_id=f"{resumed.goal_plus_id}:{resumed.control.version}",
+        activation_nonce=goal_scope_resume_nonce(resumed, closed), native_agent_config=current_config,
+    )
+
+    host = NativeDelegationHost(root, agent_harness=agent_harness, caller=lambda: goal.active_session.session_id)
+    _, admitted = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+
+    assert admitted["scope_id"] == current["scope_id"]
+    assert admitted["native_agent_config"] == current_config
+    assert execution_scope_snapshot(root_dir=root, scope_id=old["scope_id"]) == closed
 
 
 @pytest.mark.parametrize("agent_harness", ["codex", "pi"])

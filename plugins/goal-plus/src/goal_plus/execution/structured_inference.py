@@ -3,7 +3,6 @@
 import json
 import os
 import subprocess
-import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -30,6 +29,7 @@ from goal_plus.ports.inference import (
     StructuredInferenceResult,
 )
 from goal_plus.ports.process import ProcessRegistration
+from goal_plus.temp import temporary_directory
 
 
 class StructuredInference:
@@ -79,9 +79,9 @@ class StructuredInference:
         started = time.monotonic()
         invocation_id = f"invocation_{uuid.uuid4().hex}"
         temporary = ExitStack()
-        directory = Path(temporary.enter_context(tempfile.TemporaryDirectory(
+        directory = Path(temporary.enter_context(temporary_directory(
             prefix="goal-plus-inference-",
-            dir=str(request.sandbox.workspace) if request.sandbox is not None else None,
+            base=(request.sandbox.workspace if request.sandbox is not None else None),
         )))
         try:
             observer = transcript.start(

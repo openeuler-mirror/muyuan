@@ -79,6 +79,21 @@ path when already authorized, or report the unavailable host check; do not broad
 Exit: configuration provenance, rollback source, readable inputs and writable outputs are known.
 Keep a retained session's existing configuration; new bindings require their supported launch path.
 
+Before invoking a real Pi ST run, perform this small host preflight:
+
+```bash
+env -u PI_CODING_AGENT_DIR \
+  ST_PI_MODEL=sub2api-openai/gpt-6-luna \
+  ST_PI_THINKING=low \
+  uv run pytest -n 0 --run-system-tests \
+  tests/st_thinkthread/test_circle_main.py::test_native_pi_main_completes_circle_thinkthread_apply[bounded]
+```
+
+Use the same `ST_PI_MODEL` for fork. If the command exits before writing a Goal or `.gp` state,
+inspect `native-main.log` first: model syntax and Pi config-directory errors occur before the
+Goal Plus lifecycle. Do not rerun with a different provider or model until the requested binding
+has been recorded and the host-level error is understood.
+
 ## 4. Design verification and the probe plan
 
 For Search, prepare metric/input cases, protected verifier/reference inputs, edit surface, budgets,

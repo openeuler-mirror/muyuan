@@ -56,8 +56,9 @@ admission: perform its prerequisite checks beforehand, and inspect its receipt b
 Optimization needs a valid comparable baseline; first deployment may allow a failing origin only
 when the installed contract supports it. Do not fabricate an admission pass.
 
-The default `parallel_loops` uses an initial plan and fixed lanes. For explicitly selected
-`adaptive_search`, preserve allocation/steering contracts and let runtime consume settled records.
+The default omits `strategy.adaptive_search` and uses an initial plan with fixed lanes. For an
+explicit `strategy.adaptive_search` policy, preserve its allocation/steering contract and let
+runtime consume settled records.
 Inspect `goal_plus_search_list_allocation_decisions` and apply a pending decision through
 `goal_plus_search_apply_allocation_decision` with its returned identity; do not add a scheduler.
 

@@ -117,6 +117,9 @@ class CandidateSettlement:
             self.authorization.require_search_execution(run.run_id, settlement=True)
             require_worker_iteration_state(run, "record verifier result")
             record = self.state.read_candidate(run_id, candidate_id)
+            from goal_plus.application.candidate_spec import candidate_spec_id
+            if candidate_spec_id(run, record) != frozen.frozen_spec_id:
+                raise RuntimeError("CandidateSpecBindingMismatch: execution spec changed before settlement")
             require_candidate_not_recovering(record)
             if agent_session_id is not None:
                 self.candidate_sessions.session(agent_session_id, run_id=run_id)
@@ -138,7 +141,7 @@ class CandidateSettlement:
                         prior_best.score if prior_best is not None else None
                     ),
                 )
-                if (frozen.spec.strategy.orchestration_mode == "adaptive_search")
+                if frozen.spec.strategy.adaptive_search_enabled
                 else (prior_best.score if prior_best is not None else None)
             )
             iteration_number = len(record.iterations) + 1
@@ -245,6 +248,8 @@ class CandidateSettlement:
                 capture_error=request.shared_tool_capture_error if request is not None else None,
             )
             iteration = IterationRecord(
+                frozen_spec_id=frozen.frozen_spec_id,
+                spec_hash=frozen.spec_hash,
                 settlement_sequence=1 + sum(
                     len(candidate.iterations) for candidate in self.state.read_candidates(run_id)
                 ),
@@ -464,6 +469,8 @@ class CandidateSettlement:
             ledger_entry = ResultLedgerEntry(
                 source_run_id=run_id,
                 source_candidate_id=candidate_id,
+                frozen_spec_id=frozen.frozen_spec_id,
+                spec_hash=frozen.spec_hash,
                 iteration=iteration_number,
                 git_head=attempt.git_head,
                 artifact_ref=attempt_artifact_ref,
@@ -513,6 +520,8 @@ class CandidateSettlement:
                     restored_artifact_hash=settled.artifact_hash,
                 )
             receipt = SettlementReceipt(
+                frozen_spec_id=frozen.frozen_spec_id,
+                spec_hash=frozen.spec_hash,
                 settlement_id=settlement_id,
                 run_id=run_id,
                 candidate_id=candidate_id,
@@ -563,6 +572,8 @@ class CandidateSettlement:
             record.iterations.append(iteration)
             report = report.model_copy(
                 update={
+                    "frozen_spec_id": frozen.frozen_spec_id,
+                    "spec_hash": frozen.spec_hash,
                     "disposition": disposition,
                     "failure_class": failure_class,
                     "attempt_id": exact_attempt_id,
@@ -601,6 +612,7 @@ class CandidateSettlement:
                 record.task = worker_task
                 report = report.model_copy(update={"verification": record.verification})
             record.score_report = report
+            record.accepted_attempt = None
             if record.promotion_evidence and (
                 record.promotion_evidence.artifact_ref != report.best_artifact_ref
                 or record.promotion_evidence.artifact_hash != settled.artifact_hash
@@ -707,10 +719,11 @@ class CandidateSettlement:
         if frozen.spec.shared_dir.enabled:
             self.shared_tools.reconcile(run.run_id, record)
         records = self.state.read_candidates(run.run_id)
+        initial = self.state.read_frozen_spec(run.frozen_spec_id)
         best_records = []
         for candidate in records:
             best = best_artifact_iteration_record(
-                candidate, frozen.spec.metric_direction
+                candidate, initial.spec.metric_direction, frozen_spec_id=initial.frozen_spec_id,
             )
             if best is not None and candidate.score_report is not None:
                 best_records.append((candidate, best))
@@ -724,10 +737,10 @@ class CandidateSettlement:
                     "disposition": best.disposition,
                 }
             )
-            if update_best_seen(run, frozen.spec, candidate_report):
+            if update_best_seen(run, initial.spec, candidate_report):
                 winner = candidate, best
         if winner is not None:
-            self.checkpoints.write_best(run, frozen.spec, *winner)
+            self.checkpoints.write_best(run, initial.spec, *winner)
         run.candidates_evaluated = sum(
             candidate.status == "evaluated" for candidate in records
         )

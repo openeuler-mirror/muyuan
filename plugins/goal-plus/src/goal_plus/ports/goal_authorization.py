@@ -8,6 +8,16 @@ from goal_plus.domain.goal_authorization import tool_matches
 
 
 @dataclass(frozen=True)
+class DispatchPreparation:
+    """Exact Goal event authorizing a prepared native context boundary."""
+
+    goal_plus_id: str
+    run_id: str
+    event_id: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class GoalToolTarget:
     tool_name: str
     goal_plus_id: str | None = None
@@ -40,4 +50,5 @@ class GoalToolTarget:
 class GoalAuthorizationSource(Protocol):
     def goal_ids(self) -> list[str]: ...
     def read_goal(self, goal_plus_id: str) -> GoalPlusRecord: ...
+    def read_events(self, goal_plus_id: str) -> list[dict[str, object]]: ...
     def session_run_ids(self, agent_session_id: str) -> list[str]: ...

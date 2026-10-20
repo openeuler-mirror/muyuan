@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from pydantic import ConfigDict, Field, model_validator
@@ -11,7 +12,8 @@ from pydantic import ConfigDict, Field, model_validator
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.domain.settlement import SettlementReceipt
-from goal_plus.domain.artifacts import ArtifactRef
+from goal_plus.domain.artifacts import ArtifactRef, WorkspaceAttachment
+from goal_plus.domain.agents import AgentRuntimeProvider
 
 
 VerifierTaskState = Literal[
@@ -359,6 +361,36 @@ class VerifierResult(SearchModel):
         return self
 
 
+class DispatchAuditContext(SearchModel):
+    """Frozen host facts and exact settlement references, without execution authority."""
+
+    model_config = ConfigDict(frozen=True)
+    runtime_provider: AgentRuntimeProvider = "direct"
+    main_session_id: str | None = None
+    checkpoint_id: str = Field(min_length=1)
+    checkpoint_kind: str = Field(min_length=1)
+    parent_native_session_id: str = Field(min_length=1)
+    provider_session_id: str = Field(min_length=1)
+
+    @property
+    def branch_native_session_id(self) -> str:
+        return self.provider_session_id
+    workspace: Path
+    workspace_hash: str = Field(min_length=1)
+    workspace_attachment: WorkspaceAttachment | None = None
+    frozen_spec_id: str = Field(min_length=1)
+    spec_hash: str = Field(min_length=1)
+    initial_frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    initial_spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    parent_frozen_spec_id: str | None = None
+    artifact_refs: tuple[ArtifactRef, ...]
+    iteration: int = Field(ge=1)
+    settlement_id: str = Field(min_length=1)
+    launch_receipt: dict[str, Any]
+    close_receipt: dict[str, Any] = Field(default_factory=dict)
+    context_projection_digest: str | None = None
+
+
 class VerifierInput(SearchModel):
     """One immutable settlement submission; never a live search-state reader."""
 
@@ -377,6 +409,18 @@ class VerifierInput(SearchModel):
     # Frozen shared-cache projection (sections template + entries) captured at
     # settlement time; None when the run has no cache or verifier_input=false.
     cache_snapshot: dict[str, Any] | None = None
+    # Present only for fork runs.  This is a bounded, read-only
+    # projection; it never grants host control or changes hard Evidence.
+    dispatch_audit_context: DispatchAuditContext | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_dispatch_field(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "fork_audit_context" in value:
+            raise ValueError(
+                "legacy fork_audit_context field is unsupported; use dispatch_audit_context"
+            )
+        return value
 
 
 class VerifierTask(SearchModel):

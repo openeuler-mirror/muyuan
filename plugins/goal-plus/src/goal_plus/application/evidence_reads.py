@@ -16,6 +16,7 @@ from goal_plus.domain.artifacts import (
 )
 from goal_plus.domain.evidence import (
     IterationRecord,
+    public_metric_projection,
 )
 from goal_plus.ports.state import (
     ProviderResourceCleanupRecord,
@@ -27,6 +28,7 @@ from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.candidate_trace import CandidateTrace
+from goal_plus.application.candidate_spec import iteration_spec_id
 
 
 def global_evidence_entry(
@@ -36,6 +38,10 @@ def global_evidence_entry(
     discoverable_tool_ids: set[str] | None = None,
     workspace_provider: WorkspaceProvider = "git_worktree",
     provider_cleanup: list[ProviderResourceCleanupRecord] | None = None,
+    frozen_spec_id: str | None = None,
+    *, spec_hash: str | None = None,
+    metric_name: str | None = None,
+    metric_direction: str | None = None,
 ) -> dict[str, Any]:
     tool_views = {
         item.tool_id: item for item in (view.tool_views if view is not None else [])
@@ -51,6 +57,7 @@ def global_evidence_entry(
         artifact_ref,
         provider_cleanup or [],
     )
+    public_metrics, metrics_omitted = public_metric_projection(iteration.metrics)
     entry = {
         "candidate_id": candidate_id,
         "iteration": iteration.iteration,
@@ -58,13 +65,14 @@ def global_evidence_entry(
         "artifact_ref": (
             artifact_ref.model_dump(mode="json") if artifact_ref is not None else None
         ),
-        "reference_available": availability == "available",
+        "reference_available": availability == "available" and artifact_ref is not None and artifact_ref.provider != "thinkthread",
         "artifact_availability": availability,
         "annotation_result_available": view is not None,
         "score": iteration.score,
         "disposition": iteration.disposition,
         "view": view.description if view is not None else None,
         "view_created_at": view.created_at if view is not None else None,
+        "metrics": public_metrics,
         "shared_tools": [
             {
                 **tool.model_dump(mode="json", exclude={"read_only_path"}),
@@ -75,6 +83,16 @@ def global_evidence_entry(
             and (discoverable_tool_ids is None or tool.tool_id in discoverable_tool_ids)
         ],
     }
+    if frozen_spec_id is not None:
+        entry["frozen_spec_id"] = frozen_spec_id
+    if spec_hash is not None:
+        entry["spec_hash"] = spec_hash
+    if metric_name is not None:
+        entry["metric_name"] = metric_name
+    if metric_direction is not None:
+        entry["metric_direction"] = metric_direction
+    if metrics_omitted:
+        entry["metrics_omitted"] = True
     if view is not None and view.supplemental_evaluation is not None:
         entry["supplemental_available"] = True
     return entry
@@ -106,9 +124,16 @@ class EvidenceReads:
         *,
         source: Literal["explicit", "verifier_injected"] = "explicit",
         verifier_attempt_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+        known_snapshot_id: str | None = None,
+        compact: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """Return settled worker evidence and any completed objective views."""
         session = self.sessions.session(agent_session_id)
+        # Automatic injection normally follows a prior verifier response in
+        # the same session.  Derive its base from the durable read receipt so
+        # process restarts and retained ThinkThread wakes behave identically.
+        if compact and known_snapshot_id is None and session.global_evidence_reads:
+            known_snapshot_id = session.global_evidence_reads[-1].snapshot_id
         operation_id = self.trace.new_operation_id("read")
         try:
             with self.state.lock_run(session.run_id):
@@ -122,6 +147,24 @@ class EvidenceReads:
                 self.attachments.attach_external_evaluations(session.run_id, view)
                 frozen = self.state.read_frozen_spec(run.frozen_spec_id)
                 mode = global_evidence_mode(frozen.spec.strategy.config)
+                if compact and known_snapshot_id is not None:
+                    base_receipt = next(
+                        (
+                            item
+                            for item in reversed(session.global_evidence_reads)
+                            if item.snapshot_id == known_snapshot_id
+                        ),
+                        None,
+                    )
+                    # A dynamic FrozenSpec/mode revision changes the visible
+                    # contract. Old receipts without these fields are also
+                    # intentionally treated as an unusable cursor.
+                    if (
+                        base_receipt is None
+                        or base_receipt.frozen_spec_id != run.frozen_spec_id
+                        or base_receipt.mode != mode
+                    ):
+                        known_snapshot_id = None
                 if mode == "independent":
                     view = [
                         entry
@@ -205,6 +248,8 @@ class EvidenceReads:
                     operation_id=operation_id,
                     snapshot_id=snapshot.snapshot_id,
                     source=source,
+                    frozen_spec_id=run.frozen_spec_id,
+                    mode=mode,
                     candidate_verifier_iteration=(
                         caller_iterations[-1].iteration if caller_iterations else None
                     ),
@@ -239,7 +284,92 @@ class EvidenceReads:
             )
             raise
         self.register_annotations(session.run_id)
-        return view
+        if not compact:
+            return view
+        return self._compact_global_evidence(
+            session,
+            snapshot_id=snapshot.snapshot_id,
+            entries=view,
+            known_snapshot_id=known_snapshot_id,
+        )
+
+    def _compact_global_evidence(
+        self,
+        session: AgentSessionRecord,
+        *,
+        snapshot_id: str,
+        entries: list[dict[str, Any]],
+        known_snapshot_id: str | None,
+    ) -> dict[str, Any]:
+        """Build a full, delta, or unchanged Evidence delivery.
+
+        The durable snapshot remains the complete list.  Only the model-facing
+        response is compacted; if the base cannot be read or is not a list we
+        deliberately fall back to a full delivery rather than guessing a
+        removal or cross-mode change.
+        """
+        base_entries: list[dict[str, Any]] | None = None
+        if known_snapshot_id:
+            try:
+                previous = self.trace.read_snapshot(session, known_snapshot_id)
+                if isinstance(previous.content, list) and all(
+                    isinstance(item, dict) for item in previous.content
+                ):
+                    base_entries = previous.content
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                base_entries = None
+
+        def identity(item: dict[str, Any]) -> tuple[str, int]:
+            return (str(item.get("candidate_id", "")), int(item.get("iteration", 0)))
+
+        if base_entries is None:
+            return {
+                "snapshot_id": snapshot_id,
+                "base_snapshot_id": None,
+                "delivery": "full",
+                "unchanged": False,
+                "entry_count": len(entries),
+                "entries": entries,
+                "added": [],
+                "changed": [],
+                "removed": [],
+            }
+        if known_snapshot_id == snapshot_id:
+            return {
+                "snapshot_id": snapshot_id,
+                "base_snapshot_id": known_snapshot_id,
+                "delivery": "unchanged",
+                "unchanged": True,
+                "entry_count": len(entries),
+                "entries": [],
+                "added": [],
+                "changed": [],
+                "removed": [],
+            }
+
+        old = {identity(item): item for item in base_entries}
+        current = {identity(item): item for item in entries}
+        added = [item for key, item in current.items() if key not in old]
+        changed = [
+            item for key, item in current.items()
+            if key in old and old[key] != item
+        ]
+        removed = [
+            {"candidate_id": key[0], "iteration": key[1]}
+            for key in old
+            if key not in current
+        ]
+        return {
+            "snapshot_id": snapshot_id,
+            "base_snapshot_id": known_snapshot_id,
+            "delivery": "delta",
+            "unchanged": False,
+            "entry_count": len(entries),
+            "entries": [],
+            "added": added,
+            "changed": changed,
+            "removed": removed,
+        }
 
     def get_evidence_detail(
         self,
@@ -311,6 +441,10 @@ class EvidenceReads:
                     "candidate_id": candidate_id,
                     "iteration": iteration,
                     "commit": entry["commit"],
+                    "frozen_spec_id": entry["frozen_spec_id"],
+                    "spec_hash": entry["spec_hash"],
+                    "metric_name": entry["metric_name"],
+                    "metric_direction": entry["metric_direction"],
                     "supplemental_evaluation": view.supplemental_evaluation.model_dump(
                         mode="json"
                     ),
@@ -389,6 +523,7 @@ class EvidenceReads:
     def view(self, run_id: str) -> list[dict[str, Any]]:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        specs = {frozen.frozen_spec_id: frozen}
         discoverable_tool_ids = (
             self.attachments.discoverable_tool_ids(run_id)
             if frozen.spec.shared_dir.enabled
@@ -414,6 +549,10 @@ class EvidenceReads:
         )
         result = []
         for _, candidate_id, iteration, workspace_provider in evidence:
+            spec_id = iteration_spec_id(run, iteration)
+            if spec_id not in specs:
+                specs[spec_id] = self.state.read_frozen_spec(spec_id)
+            iteration_frozen = specs[spec_id]
             task = self.annotation.task(run_id, candidate_id, iteration.iteration)
             view = task.view if task is not None and task.state == "completed" else None
             if view is not None and (
@@ -436,6 +575,10 @@ class EvidenceReads:
                     discoverable_tool_ids,
                     workspace_provider,
                     run.provider_cleanup,
+                    spec_id,
+                    spec_hash=iteration_frozen.spec_hash,
+                    metric_name=iteration_frozen.spec.metric_name,
+                    metric_direction=iteration_frozen.spec.metric_direction,
                 )
             )
         return result

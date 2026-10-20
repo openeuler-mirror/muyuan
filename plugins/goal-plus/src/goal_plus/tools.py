@@ -12,11 +12,12 @@ from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
-from goal_plus.domain.evidence import PendingVerification
+from goal_plus.domain.evidence import PendingVerification, verifier_feedback_projection
 from goal_plus.domain.adaptive.models import AllocationDecisionStatus
 from goal_plus.domain.search import (
     AgentSessionRecord,
     CandidateProposal,
+    CandidateSpecRevisionInput,
     SearchSpec,
     VerifierInvalidationReason,
 )
@@ -31,6 +32,7 @@ from goal_plus.domain.goal import (
 )
 from goal_plus.domain.shared_tools import ToolizationDecision
 from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
+from goal_plus.ports.session import SessionLauncher, SearchForkLauncher
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.projections.goal_tools import (
@@ -41,7 +43,7 @@ from goal_plus.projections.monitor_tools import monitor_tool_summary
 from goal_plus.projections.session_tools import session_receipt
 from goal_plus.projections.search_tools import (
     candidate_task_receipt, frozen_spec_receipt, promotion_apply_receipt,
-    search_history_summary, search_plan_receipt,
+    search_history_summary, search_plan_receipt, compact_iteration_response,
     history_page,
 )
 from goal_plus.domain.tool_catalog import (
@@ -61,10 +63,14 @@ class SearchTools:
         goal_runtime: FileGoalPlusRuntime | None = None,
         *,
         candidate_attempt: DeferredCandidateAttempt | None = None,
+        session_launcher: SessionLauncher | None = None,
+        fork_launcher: SearchForkLauncher | None = None,
     ) -> None:
         self.runtime = runtime
         self.goal_runtime = goal_runtime
         self.candidate_attempt = candidate_attempt
+        self.session_launcher = session_launcher
+        self.fork_launcher = fork_launcher
 
     def _require_target(
         self, tool_name: str, *, settlement: bool = False, **tool_input: Any
@@ -91,6 +97,10 @@ class SearchTools:
         goal_plus_id: str,
         spec: dict[str, Any] | SearchSpec,
         verifier_artifact_paths: list[str],
+        parent_frozen_spec_id: str | None = None,
+        revision_reason: str | None = None,
+        dispatch_group_id: str | None = None,
+        dispatch_target_index: int | None = None,
     ) -> dict[str, Any]:
         self._require_search_bootstrap("goal_plus_search_freeze_spec", goal_plus_id)
         if isinstance(spec, SearchSpecInput):
@@ -119,10 +129,18 @@ class SearchTools:
                     "verifier_artifact_paths must be source_path-relative"
                 )
             artifact_paths.append(resolved)
+        lineage = {
+            key: value
+            for key, value in {
+                "parent_frozen_spec_id": parent_frozen_spec_id,
+                "revision_reason": revision_reason,
+                "dispatch_group_id": dispatch_group_id,
+                "dispatch_target_index": dispatch_target_index,
+            }.items()
+            if value is not None
+        }
         frozen = self.runtime.freeze_spec(
-            parsed_spec,
-            artifact_paths,
-            goal_plus_id=goal_plus_id,
+            parsed_spec, artifact_paths, goal_plus_id=goal_plus_id, **lineage
         )
         return frozen_spec_receipt(frozen)
 
@@ -251,6 +269,17 @@ class SearchTools:
         return [candidate_task_receipt(task)
                 for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals)]
 
+    def goal_plus_search_fork(
+        self,
+        run_id: str,
+        checkpoint_id: str = "latest_completed",
+    ) -> dict[str, Any]:
+        self._require_target("goal_plus_search_fork", run_id=run_id)
+        launcher = self.fork_launcher
+        if launcher is None:
+            raise RuntimeError("fork requires a trusted host fork adapter")
+        return launcher.fork_search_run(run_id, checkpoint_id)
+
     def search_start_agent_session(
         self,
         run_id: str,
@@ -325,6 +354,7 @@ class SearchTools:
                 evidence_options["verifier_attempt_id"] = str(result["attempt_id"])
             snapshot = self.runtime.get_global_evidence(
                 agent_session_id,
+                compact=True,
                 **evidence_options,
             )
         except Exception as exc:
@@ -333,20 +363,47 @@ class SearchTools:
                 f"Global Evidence injection failed: {type(exc).__name__}: {exc}"
             )
             return result
-        result["global_evidence_snapshot"] = snapshot
+        self._attach_global_evidence_delivery(result, snapshot)
         result["global_evidence_injected"] = True
-        result["global_evidence_entry_count"] = len(snapshot)
+        result["global_evidence_entry_count"] = (
+            snapshot.get("entry_count", 0) if isinstance(snapshot, dict) else len(snapshot)
+        )
         return result
 
     def goal_plus_search_get_global_evidence(
         self,
         agent_session_id: str,
-    ) -> list[dict[str, Any]]:
+        known_snapshot_id: str | None = None,
+        compact: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         self._require_target(
             "goal_plus_search_get_global_evidence",
             agent_session_id=agent_session_id,
         )
-        return self.runtime.get_global_evidence(agent_session_id)
+        if known_snapshot_id is None and not compact:
+            return self.runtime.get_global_evidence(agent_session_id)
+        return self.runtime.get_global_evidence(
+            agent_session_id,
+            known_snapshot_id=known_snapshot_id,
+            compact=compact,
+        )
+
+    @staticmethod
+    def _attach_global_evidence_delivery(
+        result: dict[str, Any], delivery: list[dict[str, Any]] | dict[str, Any]
+    ) -> None:
+        """Keep the legacy list field while exposing delivery metadata.
+
+        Existing workers consume ``global_evidence_snapshot`` as a list.  For
+        compact auto delivery that list is only the full snapshot on the first
+        read and the added/changed entries afterward; the durable identity and
+        removals live in ``global_evidence_update``.
+        """
+        if isinstance(delivery, dict):
+            result["global_evidence_snapshot"] = delivery.get("entries", [])
+            result["global_evidence_update"] = delivery
+        else:
+            result["global_evidence_snapshot"] = delivery
 
     def goal_plus_search_reference_open(
         self,
@@ -461,15 +518,18 @@ class SearchTools:
                 ) if self.candidate_attempt is not None else
                 self.runtime.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
             )
-            return self.verifier_response(run_id, agent_session_id, result) if inject_evidence else result
+            return self.verifier_response(
+                run_id, agent_session_id, result, inject_evidence=inject_evidence,
+            )
         if on_submitted is not None and not callable(on_submitted):
             raise ValueError("on_submitted must be an internal callback")
         if self.candidate_attempt is not None:
-            return self.runtime.thinkthread_verification.accept(
+            accepted = self.runtime.thinkthread_verification.accept(
                 self.candidate_attempt, run_id=run_id, candidate_id=candidate_id,
                 agent_session_id=agent_session_id, scope=scope, hypothesis=hypothesis,
                 toolization_decision=toolization_decision,
             ).model_dump(mode="json")
+            return self.verifier_response(run_id, None, accepted)
         report = self.runtime.run_verifier(
             run_id,
             candidate_id,
@@ -480,16 +540,23 @@ class SearchTools:
             on_submitted=on_submitted,
             attempt_id=attempt_id,
         )
-        result = report.model_dump(mode="json")
+        result = self.verifier_response(
+            run_id, agent_session_id if scope == "process" else None,
+            report.model_dump(mode="json"),
+            inject_evidence=scope == "process" and inject_evidence,
+        )
         if scope != "process" or not inject_evidence:
             return result
-        result = self.verifier_response(run_id, agent_session_id, result)
         return self.shared_cache_response(run_id, agent_session_id, result)
 
     def verifier_response(
         self, run_id: str, agent_session_id: str | None, result: dict[str, Any],
+        *, inject_evidence: bool = True,
     ) -> dict[str, Any]:
-        if agent_session_id is None or "aggregate_score" not in result:
+        result = verifier_feedback_projection(
+            result, shared_tools_enabled=self.runtime.shared_dir_enabled(run_id),
+        )
+        if not inject_evidence or agent_session_id is None or "aggregate_score" not in result:
             return result
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):
@@ -499,6 +566,7 @@ class SearchTools:
                 evidence_options["verifier_attempt_id"] = str(result["attempt_id"])
             snapshot = self.runtime.get_global_evidence(
                 agent_session_id,
+                compact=True,
                 **evidence_options,
             )
         except Exception as exc:
@@ -507,9 +575,11 @@ class SearchTools:
                 f"Global Evidence injection failed: {type(exc).__name__}: {exc}"
             )
             return result
-        result["global_evidence_snapshot"] = snapshot
+        self._attach_global_evidence_delivery(result, snapshot)
         result["global_evidence_injected"] = True
-        result["global_evidence_entry_count"] = len(snapshot)
+        result["global_evidence_entry_count"] = (
+            snapshot.get("entry_count", 0) if isinstance(snapshot, dict) else len(snapshot)
+        )
         return result
 
     def shared_cache_response(
@@ -546,7 +616,11 @@ class SearchTools:
             settlement=True,
             agent_session_id=agent_session_id,
         )
-        return history_page(self.runtime.list_agent_iterations(agent_session_id), offset, limit)
+        return history_page(
+            [compact_iteration_response(item) for item in self.runtime.list_agent_iterations(agent_session_id)],
+            offset,
+            limit,
+        )
 
     def goal_plus_search_read_shared_cache(
         self, agent_session_id: str,
@@ -623,9 +697,18 @@ class SearchTools:
             ],
         }
 
-    def goal_plus_search_select(self, run_id: str) -> dict[str, Any]:
+    def goal_plus_search_revise_spec(
+        self, agent_session_id: str, request_id: str, parent_frozen_spec_id: str,
+        revision_reason: str, revision: CandidateSpecRevisionInput,
+    ) -> dict[str, Any]:
+        self._require_target("goal_plus_search_revise_spec", agent_session_id=agent_session_id)
+        return frozen_spec_receipt(self.runtime.revise_candidate_spec(
+            agent_session_id, request_id, parent_frozen_spec_id, revision_reason, revision,
+        ))
+
+    def goal_plus_search_select(self, run_id: str, frozen_spec_id: str | None = None) -> dict[str, Any]:
         self._require_target("goal_plus_search_select", run_id=run_id)
-        return self.runtime.select(run_id)
+        return self.runtime.select(run_id, frozen_spec_id=frozen_spec_id)
 
     def goal_plus_search_report(self, run_id: str) -> dict[str, str]:
         if self.goal_runtime is not None:
@@ -634,6 +717,7 @@ class SearchTools:
         return {
             "report_path": str(report_path),
             "html_report_path": str(report_path.with_suffix(".html")),
+            "bundle_path": str(report_path.with_name("report-bundle.zip")),
         }
 
     def goal_plus_search_promote(self, run_id: str, candidate_id: str) -> dict[str, Any]:

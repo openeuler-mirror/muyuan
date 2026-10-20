@@ -29,7 +29,6 @@ Goal Plus is a multi-agent collaboration runtime in [Muyuan](../../README.md) fo
   - [📚 8. Documentation](#-8-documentation)
   - [📄 9. Licensing and Third-Party Sources](#-9-licensing-and-third-party-sources)
 
-
 ## 📘 1. Core Capabilities
 
 | Capability | What it provides |
@@ -45,6 +44,8 @@ Goal Plus is a multi-agent collaboration runtime in [Muyuan](../../README.md) fo
 
 | Date | Milestone |
 | --- | --- |
+| 2026-10-14 | **Fork contracts**: Codex/Pi direct and ThinkThread fork identities, workspace bindings, FrozenSpec lineage and public metric projections use one provider-neutral Search interface. |
+| 2026-10-15 | **[ThinkThread fork](docs/agent-host-adapters.md#fork-支持范围)**: Pi/Codex share the fork/session/apply flow, including retained Children, verification, publication/apply and cleanup. Real TT Circle scenarios cover both hosts; SDK exact checkpoint proof and fault recovery remain limited. |
 | 2026-09-18 | **[ThinkThread Codex support](docs/codex.md#支持范围与验证)**: Run Codex candidates in private Children, verify snapshots, and apply results. |
 | 2026-09-14 | **[LLM Verifier](docs/llm-verifier.md)**: Evaluate settled results and provide scores for selection and allocation. |
 | 2026-09-07 | **[Unified task management and execution](docs/agent-host-adapters.md)**: Separate task state by responsibility and share execution interfaces across Codex/Pi. |
@@ -271,14 +272,13 @@ Paths below are relative to `plugins/goal-plus/`:
 | [tests/](tests/) | Default regression tests, integration tests, and opt-in real-host tests. |
 | [scripts/](scripts/) | Installation, monitoring, diagnostics, and documentation generation tools. |
 
-
 ## 📚 8. Documentation
 
 | I want to... | Start here |
 | --- | --- |
 | Install, update, or develop the plugin | [Development](docs/development.md), [Codex](docs/codex.md), [Pi](docs/pi.md) |
 | Understand commands, parameters, and task controls | [API](docs/api.md), [Runtime Logic](docs/runtime-logic.md) |
-| Understand candidate collaboration | [Shared Plane](docs/shared-plane.md), [Evidence Annotator](docs/evidence-annotator.md) |
+| Understand candidate collaboration and fresh/fork dispatch | [Candidate Dispatch](docs/candidate-dispatch.md), [Shared Plane](docs/shared-plane.md), [Evidence Annotator](docs/evidence-annotator.md) |
 | Configure evaluation and adaptive policies | [LLM Verifier](docs/llm-verifier.md), [Adaptive Search](docs/adaptive-search.md) |
 | Diagnose execution, recovery, or reporting issues | [Debugging](docs/debugging-runtime.md), [Search Recovery](docs/search-recovery.md) |
 | Find all guides and code entry points | [Documentation Map](docs/README.md), [System Specification](SPEC.md) |

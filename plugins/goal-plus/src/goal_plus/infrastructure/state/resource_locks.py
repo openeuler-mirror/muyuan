@@ -1,11 +1,11 @@
 """Host-local verifier/device namespace and shared resource exclusion."""
 
 import os
-import tempfile
 from pathlib import Path
 from contextlib import contextmanager
 from goal_plus.domain.serialization import sha256_text
 from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
+from goal_plus.temp import temporary_root
 
 VERIFIER_RESOURCE_LOCK_DIR_ENV = "GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR"
 
@@ -23,8 +23,7 @@ def host_resource_lock_root() -> Path:
         os.environ.get(
             VERIFIER_RESOURCE_LOCK_DIR_ENV,
             str(
-                Path(tempfile.gettempdir())
-                / "goal-plus-verifier-locks"
+                temporary_root() / "goal-plus-verifier-locks"
                 / default_namespace
             ),
         )

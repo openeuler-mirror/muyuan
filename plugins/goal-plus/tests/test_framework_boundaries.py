@@ -98,7 +98,10 @@ def boundary_errors(source: str, module: str, layer: str) -> list[str]:
                 imports[alias.asname or alias.name] = origin + "." + alias.name
                 dependencies.append(origin + "." + alias.name)
 
-    allowed = ("goal_plus.domain.",)
+    # ``goal_plus.temp`` is a stateless, checkout-local scratch helper shared
+    # by execution and infrastructure adapters. It owns no domain state or
+    # provider I/O beyond the standard-library temporary directory primitive.
+    allowed = ("goal_plus.domain.", "goal_plus.temp.")
     if layer in {"ports", "application", "execution", "projections"}:
         allowed += ("goal_plus.ports.",)
     if layer == "application":

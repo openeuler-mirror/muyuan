@@ -139,7 +139,7 @@ def test_monitor_script_renders_orchestration_feature_plugin(tmp_path: Path) -> 
 
 def test_monitor_script_reports_missing_runtime_root(tmp_path: Path) -> None:
     result = subprocess.run(
-        [str(SCRIPT), "--once", str(tmp_path)],
+        [str(SCRIPT), "--once", "--root", str(tmp_path / "missing-runtime")],
         cwd=ROOT,
         env=_script_env(),
         text=True,
@@ -148,4 +148,4 @@ def test_monitor_script_reports_missing_runtime_root(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 1
-    assert "no Goal Plus runtime root found" in result.stderr
+    assert "runtime root is not a directory" in result.stderr

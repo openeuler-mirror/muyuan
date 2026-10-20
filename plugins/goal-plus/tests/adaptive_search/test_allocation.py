@@ -479,7 +479,7 @@ def test_executor_recovers_pending_decisions_in_order_without_verifier(tmp_path)
 def test_admission_fences_only_the_selected_retirement(tmp_path, status):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
     _, state, _, _, _ = executor(tmp_path)
-    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.frozen.spec.strategy = SimpleNamespace(adaptive_search_enabled=True)
     state.decision.retire_candidate_ids = ["c001", "c002"]
     state.decision.selected_retirement = "c001"
     state.decision.status = status
@@ -495,7 +495,7 @@ def test_admission_does_not_fence_before_retirement_is_selected(tmp_path):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
 
     _, state, _, _, _ = executor(tmp_path)
-    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.frozen.spec.strategy = SimpleNamespace(adaptive_search_enabled=True)
     state.decision.status = "pending"
     state.decision.selected_retirement = None
     guard = AdaptiveAdmission(state)
@@ -509,7 +509,7 @@ def test_admission_does_not_fence_selected_retirement_after_decision_finishes(tm
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
 
     _, state, _, _, _ = executor(tmp_path)
-    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.frozen.spec.strategy = SimpleNamespace(adaptive_search_enabled=True)
     state.decision.selected_retirement = "c001"
     state.decision.status = status
     guard = AdaptiveAdmission(state)
@@ -522,7 +522,7 @@ def test_non_adaptive_admission_ignores_selected_retirement(tmp_path):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
 
     _, state, _, _, _ = executor(tmp_path)
-    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="standard")
+    state.frozen.spec.strategy = SimpleNamespace(adaptive_search_enabled=False)
     state.decision.selected_retirement = "c001"
     state.decision.status = "pending"
     guard = AdaptiveAdmission(state)

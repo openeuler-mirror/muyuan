@@ -30,12 +30,12 @@ macOS 使用系统 `/usr/bin/sandbox-exec` 执行 Seatbelt 文件写入限制，
 不通过 `PATH` 选择同名程序，也不开放整个宿主 `/private/tmp`。
 默认保留模型访问所需网络，`network=deny` 才额外禁网。
 
-两端 outer launch 共用临时目录准备：优先在 `/tmp`（macOS 解析为 `/private/tmp`）下创建
-本次进程专属目录；系统临时目录缺失、只读或权限不足时，退到当前工作目录的 `.gp/.tmp/`
-下创建专属目录。其他 I/O 错误保持失败。仅该目录加入显式写根，并统一设置子进程的
-`TMPDIR`、`TMP`、`TEMP`，不继承可能不可写的宿主临时目录。Linux 将该目录绑定进 namespace。
-Native session 关闭和 structured inference 完成后清理；启动失败同样清理，强制杀死宿主
-可能留下临时目录。fallback 只选择临时文件位置，不绕过 sandbox。
+两端 outer launch 共用临时目录准备：默认在当前工作目录的 `.tmp/` 下创建本次进程专属
+目录。可通过 `GOAL_PLUS_TMPDIR` 显式选择另一处已授权的数据盘目录。其他 I/O 错误保持
+失败。仅该目录加入显式写根，并统一设置子进程的 `TMPDIR`、`TMP`、`TEMP`，不继承可能
+不可写的宿主临时目录。Linux 仍在 namespace 内提供私有 `/tmp`，但 Goal Plus 分配的
+scratch 目录会显式绑定进 namespace。Native session 关闭和 structured inference 完成后
+清理；启动失败同样清理，强制杀死宿主可能留下临时目录。
 
 声明路径的规范化、拒绝 filesystem root 写权限和 cwd 归属检查由共同 resolver 执行，
 Linux/macOS 不各自维护一套校验。
@@ -153,7 +153,7 @@ Pi dev venv 和 bootstrap Python 应位于 `/tmp` 外，否则 private tmpfs 会
 ## 验证与诊断
 
 [sandbox resolver 测试](../tests/test_sandbox_launch.py)覆盖两端命令策略、缺失后端拒绝、共同 cwd
-边界，以及本机 Linux/macOS 实际写入限制、只读模式、临时目录 fallback 和启动失败清理；
+边界，以及本机 Linux/macOS 实际写入限制、只读模式、checkout-local scratch 和启动失败清理；
 [Pi 配置测试](../tests/test_pi_sandbox_config.py)覆盖默认及
 显式配置来源、session 配置保留和宿主配置不变。
 

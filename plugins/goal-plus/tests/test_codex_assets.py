@@ -45,12 +45,13 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
         assert handler["timeout"] == (3 if event == "Interrupt" else 30)
 
 
-def test_codex_main_and_candidate_mcp_inherit_debug_switch() -> None:
+@pytest.mark.parametrize("name", ["GOAL_PLUS_DEBUG", "GOAL_PLUS_TMPDIR"])
+def test_codex_main_and_candidate_mcp_inherit_operational_environment(name: str) -> None:
     plugin = json.loads((ROOT / "assets/codex/mcp.json").read_text())
-    assert "GOAL_PLUS_DEBUG" in plugin["mcpServers"]["goal-plus"]["env_vars"]
+    assert name in plugin["mcpServers"]["goal-plus"]["env_vars"]
     for path in ("assets/codex/config.example.toml", "assets/codex/agents/search_candidate_common_agent.toml"):
         config = tomllib.loads((ROOT / path).read_text())
-        assert "GOAL_PLUS_DEBUG" in config["mcp_servers"]["goal-plus"]["env_vars"]
+        assert name in config["mcp_servers"]["goal-plus"]["env_vars"]
 
 def test_codex_plugin_default_prompts_use_exact_host_command() -> None:
     manifest = json.loads(
@@ -75,10 +76,8 @@ def test_codex_and_pi_worker_launch_contracts_share_the_portable_core() -> None:
     pi_normalized = " ".join(pi_prompt.split())
 
     for instruction in (
-        "goal_plus_search_get_agent_context(agent_session_id)",
+        "goal_plus_search_get_agent_context()",
         "`candidate_task`",
     ):
         assert instruction in codex_normalized
         assert instruction in pi_normalized
-    assert "ThinkThread" not in codex_normalized
-    assert "ThinkThread" in pi_normalized

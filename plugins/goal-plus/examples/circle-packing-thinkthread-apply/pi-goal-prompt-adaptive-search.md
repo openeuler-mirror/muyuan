@@ -9,7 +9,7 @@ verifier 会直接失败）。
 
 ```yaml
 budget: {max_parallel: 2, max_candidates: 4}
-strategy: {orchestration_mode: adaptive_search, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}, allocation: {policy: swe_search_uct/v1}, steering: {policy: search_diagnostic_guidance/v1}}
+strategy: {initial_context: fresh, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}, adaptive_search: {allocation: {policy: swe_search_uct/v1}, steering: {policy: search_diagnostic_guidance/v1}}}
 ```
 
 只运行一个 K=2 Search，并把两个确定路线作为各 lane 的起点：c001 从

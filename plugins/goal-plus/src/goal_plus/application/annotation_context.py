@@ -6,6 +6,7 @@ from typing import Any
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.artifact_availability import artifact_availability
 from goal_plus.application.search_context import SearchContext
+from goal_plus.application.candidate_spec import iteration_spec_id
 from goal_plus.domain.annotation import (
     EvidenceAnnotationTask,
     EvidenceComparisonReference,
@@ -147,7 +148,7 @@ class AnnotationContextBuilder:
                 if item.iteration == iteration_number
                 and (
                     item.agent_session_id is not None
-                    or frozen.spec.strategy.orchestration_mode == "adaptive_search"
+                    or frozen.spec.strategy.adaptive_search_enabled
                 )
             ),
             None,
@@ -160,6 +161,12 @@ class AnnotationContextBuilder:
         task = self.workflow.task(run_id, candidate_id, iteration_number)
         if task is None or task.profile is None:
             raise RuntimeError("annotation requires a runnable immutable task")
+        frozen = self.admission_source.read_frozen_spec(iteration_spec_id(run, iteration))
+        if (
+            (task.frozen_spec_id or run.frozen_spec_id) != frozen.frozen_spec_id
+            or (task.spec_hash is not None and task.spec_hash != frozen.spec_hash)
+        ):
+            raise RuntimeError("annotation task does not match settled spec version")
         commit = iteration.git_head
         if (
             task.attempt_commit != commit
@@ -261,6 +268,7 @@ class AnnotationContextBuilder:
                     item
                     for item in reversed(record.iterations)
                     if item.iteration < iteration.iteration and item.score is not None
+                    and iteration_spec_id(run, item) == frozen.frozen_spec_id
                 ),
                 None,
             )
@@ -334,6 +342,8 @@ class AnnotationContextBuilder:
                 for command in frozen.spec.process_verifiers
             ],
             "objective": frozen.spec.objective,
+            "frozen_spec_id": frozen.frozen_spec_id,
+            "spec_hash": frozen.spec_hash,
             "task_context": task_context,
             "task_context_source": task_context_source,
             "supplemental_evaluation_enabled": (task.supplemental_evaluation_enabled),

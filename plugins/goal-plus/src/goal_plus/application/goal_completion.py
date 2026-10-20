@@ -27,6 +27,7 @@ from goal_plus.ports.goal_search import GoalSearchArtifacts
 from goal_plus.application.goal_final_check_launch import final_check_launch
 from goal_plus.domain.goal_closeout import (
     require_current_search_result,
+    require_honest_search_evidence,
     final_check_mode,
     latest_final_check,
 )
@@ -234,6 +235,9 @@ class GoalCompletion:
             if verdict == "pass":
                 self.reconciliation.require_idle_execution(record, "pass final check")
                 require_current_search_result(record, "pass final check")
+                require_honest_search_evidence(
+                    record, normalized_evidence, "pass final check"
+                )
 
             now = self.clock.timestamp()
             completed = check.model_copy(
@@ -343,6 +347,9 @@ class GoalCompletion:
             if status == "complete":
                 self.reconciliation.require_idle_execution(record, "complete Goal Plus")
                 require_current_search_result(record, "complete Goal Plus")
+                require_honest_search_evidence(
+                    record, evidence, "complete Goal Plus"
+                )
             if status == "complete" and final_check_mode(record) == "required":
                 final_check = latest_final_check(record)
                 if (

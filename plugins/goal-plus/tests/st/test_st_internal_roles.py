@@ -67,10 +67,10 @@ def test_circle_annotation_verifier(
         "timeout_seconds": timeout,
     }
     data["strategy"].update({
-        "orchestration_mode": "adaptive_search", "inner_agent": "common",
+        "initial_context": "fresh", "inner_agent": "common",
         "evidence_annotator": profile,
         "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-        "allocation": {"policy": "swe_search_uct/v1"},
+        "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
     })
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(

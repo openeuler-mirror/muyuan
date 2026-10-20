@@ -43,6 +43,10 @@ class SearchBootstrap:
         *,
         goal_plus_id: str | None = None,
         agent_harness: AgentHarnessKind | None = None,
+        parent_frozen_spec_id: str | None = None,
+        revision_reason: str | None = None,
+        dispatch_group_id: str | None = None,
+        dispatch_target_index: int | None = None,
     ) -> FrozenSpec:
         goal_revision = None
         if goal_plus_id is not None:
@@ -59,6 +63,36 @@ class SearchBootstrap:
             raise ValueError("Search freeze requires a trusted native host")
         inputs = self.source.prepare(spec, verifier_artifacts, agent_harness=agent_harness)
         spec, source_root = inputs.spec, inputs.source_root
+        if spec.strategy.fork_enabled and not inputs.fork_supported:
+            raise ValueError("fork requires a host fork capability")
+        if parent_frozen_spec_id is not None and not parent_frozen_spec_id.strip():
+            raise ValueError("parent_frozen_spec_id must be non-empty")
+        if revision_reason is not None and not revision_reason.strip():
+            raise ValueError("revision_reason must be non-empty")
+        if parent_frozen_spec_id is not None and revision_reason is None:
+            raise ValueError("parent_frozen_spec_id requires revision_reason")
+        if dispatch_group_id is not None and not dispatch_group_id.strip():
+            raise ValueError("dispatch_group_id must be non-empty")
+        if dispatch_target_index is not None and dispatch_target_index < 1:
+            raise ValueError("dispatch_target_index must be positive")
+        if parent_frozen_spec_id is not None:
+            try:
+                parent = self.state.read(parent_frozen_spec_id)
+            except FileNotFoundError as exc:
+                raise ValueError(f"FrozenSpecLineageMissing: parent spec {parent_frozen_spec_id!r} does not exist") from exc
+            if (parent.goal_plus_id != goal_plus_id or parent.agent_harness != agent_harness
+                    or parent.runtime_provider != inputs.runtime_provider or parent.spec.source_path != spec.source_path):
+                raise ValueError("FrozenSpecLineageMismatch: parent and revision must share goal, host, provider and source")
+            if dispatch_group_id is None and dispatch_target_index is None:
+                dispatch_group_id = parent.dispatch_group_id
+                dispatch_target_index = parent.dispatch_target_index
+        if dispatch_group_id is not None or dispatch_target_index is not None:
+            if dispatch_group_id is None or dispatch_target_index is None or parent_frozen_spec_id is None:
+                raise ValueError("FrozenSpecLineageMismatch: dispatch revision requires group, target and parent spec")
+            binding = self.state.read_candidate_origin(dispatch_group_id, dispatch_target_index)
+            if (parent.frozen_spec_id != binding.frozen_spec_id
+                    and (parent.dispatch_group_id, parent.dispatch_target_index) != (dispatch_group_id, dispatch_target_index)):
+                raise ValueError("FrozenSpecLineageMismatch: parent spec belongs to another branch")
         supplemental_enabled, supplemental_required = (
             inputs.supplemental_enabled,
             inputs.supplemental_required,
@@ -130,6 +164,10 @@ class SearchBootstrap:
                     "device_inventory": device_inventory_payload,
                     "supplemental_evaluation_enabled": supplemental_enabled,
                     "supplemental_evaluation_required": supplemental_required,
+                    "parent_frozen_spec_id": parent_frozen_spec_id,
+                    "revision_reason": revision_reason,
+                    "dispatch_group_id": dispatch_group_id,
+                    "dispatch_target_index": dispatch_target_index,
                 }
             )
         )
@@ -155,7 +193,11 @@ class SearchBootstrap:
             source_artifact_ref=source_artifact_ref,
             origin_verification=origin_verification,
             device_inventory=device_inventory,
+            parent_frozen_spec_id=parent_frozen_spec_id,
+            revision_reason=revision_reason,
+            dispatch_group_id=dispatch_group_id,
+            dispatch_target_index=dispatch_target_index,
             created_at=self.clock.timestamp(),
         )
         self.state.write(frozen)
-        return frozen
+        return self.state.read(frozen.frozen_spec_id)

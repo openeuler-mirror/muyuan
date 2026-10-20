@@ -11,6 +11,7 @@ from goal_plus.ports.clock import Clock
 from goal_plus.ports.publication import PromotionState, LocalPublicationPreparation
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.candidate_execution import require_run_not_invalidated
+from goal_plus.application.candidate_spec import iteration_spec_id
 from collections.abc import Generator
 from goal_plus.domain.evidence import ScoreReport
 from goal_plus.ports.candidate_verification import CandidateVerificationRequest
@@ -57,7 +58,7 @@ class Promotion:
             raise RuntimeError(
                 "cannot promote candidate before goal_plus_search_select selects it"
             )
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        frozen = self.state.read_frozen_spec(run.selected_frozen_spec_id or run.frozen_spec_id)
 
         def reject_promotion(message: str) -> None:
             latest_run = self.state.read_run(run_id)
@@ -117,6 +118,7 @@ class Promotion:
                 iteration
                 for iteration in record.iterations
                 if iteration.iteration == run.selected_iteration
+                and iteration_spec_id(run, iteration) == frozen.frozen_spec_id
                 and (
                     iteration.artifact_ref == selected_artifact_ref
                     or (
@@ -153,6 +155,8 @@ class Promotion:
             evidence = record.promotion_evidence
             evidence_is_current = bool(
                 evidence
+                and (evidence.frozen_spec_id or run.frozen_spec_id) == frozen.frozen_spec_id
+                and (evidence.spec_hash is None or evidence.spec_hash == frozen.spec_hash)
                 and evidence.candidate_id == candidate_id
                 and evidence.selected_artifact_ref == selected_artifact_ref
                 and evidence.artifact_ref == selected.artifact_ref
@@ -179,6 +183,7 @@ class Promotion:
                     )
                 patch_path = prepared.artifact_path
                 run.promotion = PromotionRecord(
+                    frozen_spec_id=frozen.frozen_spec_id, spec_hash=frozen.spec_hash,
                     promotion_id=f"promotion_{candidate_id}",
                     run_id=run_id,
                     candidate_id=candidate_id,
@@ -218,6 +223,7 @@ class Promotion:
                         provider=record.task.workspace_provider,
                     )
                 run.promotion = PromotionRecord(
+                    frozen_spec_id=frozen.frozen_spec_id, spec_hash=frozen.spec_hash,
                     promotion_id=f"promotion_{candidate_id}",
                     run_id=run_id,
                     candidate_id=candidate_id,

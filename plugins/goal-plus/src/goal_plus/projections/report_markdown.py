@@ -9,6 +9,7 @@ from goal_plus.domain.serialization import canonical_json
 from goal_plus.application.candidate_ranking import best_iteration_record
 from goal_plus.application.artifact_availability import artifact_availability
 from goal_plus.projections.publication import publication_summary
+from goal_plus.projections.fork import dispatch_group_summary
 
 
 def markdown_cell(value: str) -> str:
@@ -42,6 +43,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
         f"- Best candidate: `{run.best_candidate_id}`",
         f"- Best score: `{run.best_score}`",
         f"- Selected score: `{run.selected_score}`",
+        f"- Selected frozen spec: `{run.selected_frozen_spec_id}`",
         f"- Selected iteration: `{run.selected_iteration}`",
         f"- Selected git head: `{run.selected_git_head}`",
         f"- Invalidated at: `{run.invalidated_at}`",
@@ -78,13 +80,35 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
             f"{markdown_cell(artifact.id if artifact is not None else '')} | "
             f"{markdown_cell(verifier_summary)} |"
         )
+    fork = dispatch_group_summary(run.dispatch_group)
+    if fork is not None:
+        lines.extend([
+            "", "## Fork", "",
+            f"- Group: `{fork['dispatch_group_id']}` ({fork['status']})",
+            f"- Runtime provider: `{fork['runtime_provider']}`",
+            f"- Main session: `{fork['main_session_id']}`",
+            f"- Parent native session: `{fork['parent_native_session_id']}`",
+            f"- Checkpoint: `{fork['checkpoint_id']}` ({fork['checkpoint_kind']})",
+            f"- Frozen spec: `{fork['frozen_spec_id']}`",
+            "", "| Branch | Candidate | Session | Native session | Launch | Closed at | Audit | Audit record | Attachment | Receipt |",
+            "|---:|---|---|---|---|---|---|---|---|---|",
+        ])
+        for branch in fork["targets"]:
+            binding = branch["binding"]
+            lines.append(
+                f"| {branch['dispatch_target_index']} | `{branch['candidate_id']}` | `{branch['agent_session_id']}` | "
+                f"`{branch['provider_session_id'] or ''}` | {branch['launch_state']} | "
+                f"{branch['closed_at'] or ''} | {branch['audit_state']} | `{branch['audit_record_id'] or ''}` | "
+                f"{markdown_cell(canonical_json(binding['workspace_attachment']))} | "
+                f"{markdown_cell(canonical_json(binding['launch_receipt']))} |"
+            )
     lines.extend(
         [
             "",
             "## Strategy Plans",
             "",
-            "| Plan | Status | Strategy | Orchestration | Requested | Planned | Started Candidates | Trace |",
-            "|---|---|---|---|---:|---:|---|---|",
+            "| Plan | Status | Strategy | Initial Context | Adaptive | Requested | Planned | Started Candidates | Trace |",
+            "|---|---|---|---|---|---:|---:|---|---|",
         ]
     )
     for plan in plans:
@@ -95,7 +119,8 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
         )
         lines.append(
             f"| `{plan.plan_id}` | {plan.status} | `{plan.strategy.name}` | "
-            f"`{plan.strategy.orchestration_mode}` | "
+            f"`{plan.strategy.initial_context}` | "
+            f"{'yes' if plan.strategy.adaptive_search_enabled else 'no'} | "
             f"{plan.requested_k} | {plan.planned_k} | "
             f"{markdown_cell(', '.join(plan.started_candidate_ids))} | "
             f"{markdown_cell(str(trace))} |"
@@ -105,14 +130,17 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
             "",
             "## Candidates",
             "",
-            "| Candidate | Plan | Agent Sessions | Parent/Base | Status | Score | Git Head | Best Iteration | Best Score | Best Git Head | Process | Summary | Key Metrics | Changed Files | Results Ledger |",
-            "|---|---|---|---|---|---:|---|---:|---:|---|---|---|---|---|---|",
+            "Scores use each candidate's active evaluation contract. Scores from different frozen specs are not compared.",
+            "",
+            "| Candidate | Active Frozen Spec | Metric | Plan | Agent Sessions | Parent/Base | Status | Score | Git Head | Best Iteration | Best Score | Best Git Head | Process | Summary | Key Metrics | Changed Files | Results Ledger |",
+            "|---|---|---|---|---|---|---|---:|---|---:|---:|---|---|---|---|---|---|",
         ]
     )
     ledger_summaries: list[
         tuple[CandidateRecord, Path | None, list[ResultLedgerEntry]]
     ] = []
     for record in records:
+        active = inputs.candidate_specs[record.candidate_id]
         score = ""
         passed = ""
         latest_iteration = record.iterations[-1] if record.iterations else None
@@ -125,11 +153,13 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
         agent_sessions = ", ".join(
             session["agent_session_id"] for session in payload["agent_sessions"]
         )
-        best_iteration = best_iteration_record(record, frozen.spec.metric_direction)
+        best_iteration = best_iteration_record(record, active.spec.metric_direction)
         if best_iteration is not None:
             score = "" if best_iteration.score is None else str(best_iteration.score)
             passed = "True"
-        elif record.score_report and record.score_report.process_passed:
+        elif record.score_report and record.score_report.process_passed and (
+            record.score_report.frozen_spec_id or run.frozen_spec_id
+        ) == active.frozen_spec_id:
             score = (
                 ""
                 if record.score_report.aggregate_score is None
@@ -186,16 +216,30 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
                 else "missing results.tsv projection"
             )
         lines.append(
-            f"| `{record.candidate_id}` | `{record.task.plan_id or ''}` | "
+            f"| `{record.candidate_id}` | `{active.frozen_spec_id}` | "
+            f"{markdown_cell(active.spec.metric_name)} ({active.spec.metric_direction}) | `{record.task.plan_id or ''}` | "
             f"{markdown_cell(agent_sessions)} | "
             f"{markdown_cell(parent_base)} | {record.status} | {score} | "
             f"{markdown_cell(git_head or '')} | "
             f"{best_iteration_value} | {best_score_value} | "
             f"{markdown_cell(best_git_head)} | {passed} | "
-                f"{markdown_cell(payload.get('summary', ''))} | "
+            f"{markdown_cell(payload.get('summary', ''))} | "
             f"{markdown_cell(key_metrics)} | {markdown_cell(changed)} | "
             f"{markdown_cell(ledger_display)} |"
         )
+    if any(record.spec_revisions for record in records):
+        lines.extend([
+            "", "## Evaluation Contract Versions", "",
+            "| Candidate | Iteration | Frozen Spec | Spec Hash |",
+            "|---|---:|---|---|",
+        ])
+        for record in records:
+            for iteration in record.iterations:
+                lines.append(
+                    f"| `{record.candidate_id}` | {iteration.iteration} | "
+                    f"`{iteration.frozen_spec_id or run.frozen_spec_id}` | "
+                    f"`{iteration.spec_hash or frozen.spec_hash}` |"
+                )
     lines.extend(
         [
             "",

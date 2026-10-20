@@ -12,16 +12,67 @@ import pytest
 import goal_plus.internal_agents as internal_agents
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import GoalPlusHostCommandInvocation, SearchSpec
-from goal_plus.pi_tool import call_pi_host_command, call_pi_tool
+from goal_plus.pi_tool import call_pi_host_command, call_pi_tool, main as pi_tool_main
 from goal_plus.pi_tool import (
     PI_CLOSEOUT_TOOL_NAMES,
     PI_CONTROLLER_ONLY_CLOSEOUT_ENV,
+    PI_SCHEMA_ONLY_CANDIDATE_ID,
 )
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 pytestmark = pytest.mark.pi
+
+
+def test_pi_host_manifest_forwards_worker_binding(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import goal_plus.mcp_client as mcp_client
+
+    calls: list[dict[str, object]] = []
+
+    def manifest(root, **kwargs):
+        calls.append({"root": root, **kwargs})
+        return {"tools": []}
+
+    monkeypatch.setattr(mcp_client, "mcp_manifest", manifest)
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_SESSION_ID", "agent-001")
+
+    assert pi_tool_main([
+        "host_mcp_manifest", "--root", str(tmp_path / ".gp"), "--args-json", "{}",
+    ]) == 0
+    assert calls == [{
+        "root": str(tmp_path / ".gp"),
+        "caller_role": "candidate",
+        "caller_agent_session_id": "agent-001",
+    }]
+
+
+def test_pi_host_manifest_uses_schema_identity_for_unbound_thinkthread_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import goal_plus.mcp_client as mcp_client
+
+    calls: list[dict[str, object]] = []
+
+    def manifest(root, **kwargs):
+        calls.append({"root": root, **kwargs})
+        return {"tools": []}
+
+    monkeypatch.setattr(mcp_client, "mcp_manifest", manifest)
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.delenv("GOAL_PLUS_AGENT_SESSION_ID", raising=False)
+    monkeypatch.setenv("THINKTHREAD_PARENT_ID", "tt-parent")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "/sdk/index.js")
+
+    assert pi_tool_main([
+        "host_mcp_manifest", "--root", str(tmp_path / ".gp"), "--args-json", "{}",
+    ]) == 0
+    assert calls == [{
+        "root": str(tmp_path / ".gp"),
+        "caller_role": "candidate",
+        "caller_agent_session_id": PI_SCHEMA_ONLY_CANDIDATE_ID,
+    }]
 
 
 def test_pi_controller_only_closeout_rejects_direct_calls(
@@ -55,7 +106,8 @@ def test_pi_controller_only_closeout_rejects_direct_calls(
 
 
 @pytest.mark.host_process
-def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope_attachment", ["goal", "search"])
+def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path, scope_attachment: str) -> None:
     from goal_plus.host_scope import close_execution_scope
 
     root = tmp_path / ".gp"
@@ -67,12 +119,22 @@ def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> No
     )
     goal = goals.start_from_host_command("Test", invocation=invocation)
     goals.activate_session(goal.goal_plus_id, {"agent_harness": "pi", "session_id": "pi-main"})
+    attachment_id = goal.goal_plus_id
+    if scope_attachment == "search":
+        project = make_project(tmp_path)
+        search = FileSearchRuntime(root)
+        frozen = search.freeze_spec(
+            spec_for(project), [project / "evaluator.py"],
+            goal_plus_id=goal.goal_plus_id, agent_harness="pi",
+        )
+        attachment_id = search.create_run(frozen.frozen_spec_id)
+        goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, attachment_id)
     args = {
             "agent_harness": "pi",
             "goal_plus_id": goal.goal_plus_id,
             "native_session_id": "pi-main",
             "owner_session_id": "pi-owner-key",
-            "run_id": goal.goal_plus_id,
+            "run_id": attachment_id,
             "native_agent_config": {
                 "model_pattern": "native-main/example-model",
                 "thinking_level": "low",
@@ -85,14 +147,14 @@ def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> No
         "thinking_level": "low",
     }
     close_execution_scope(root_dir=root, scope_id=result["scope_id"], reason="aborted")
+    args["run_id"] = goal.goal_plus_id
     before = goals.status(goal.goal_plus_id)
     with pytest.raises(RuntimeError, match="new work is fenced"):
         call_pi_tool(root, "host_execution_scope_open", args)
     assert goals.status(goal.goal_plus_id) == before
-    for action in ("pause", "resume"):
-        goals.control_from_host_command(goal.goal_plus_id, invocation=invocation.model_copy(update={
-            "action": action, "invocation_id": f"pi:{action}",
-        }))
+    goals.control_from_host_command(goal.goal_plus_id, invocation=invocation.model_copy(update={
+        "action": "resume", "invocation_id": "pi:resume",
+    }))
     resumed = call_pi_tool(root, "host_execution_scope_open", args)
     assert resumed["scope_id"] != result["scope_id"]
     assert resumed["activation_id"] == f"{goal.goal_plus_id}:{goals.status(goal.goal_plus_id).control.version}"
@@ -359,7 +421,7 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path, monkeypat
     context = call_pi_tool(
         runtime_root,
         "goal_plus_search_get_agent_context",
-        {"agent_session_id": session.agent_session_id},
+        {},
     )
     assert context["candidate_task"]["workspace"] == str(task.workspace)
     assert context["candidate_id"] == task.candidate_id
@@ -368,7 +430,7 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path, monkeypat
     assert call_pi_tool(
         runtime_root,
         "goal_plus_search_get_global_evidence",
-        {"agent_session_id": session.agent_session_id},
+        {},
     ) == []
 
     (task.workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -376,35 +438,26 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path, monkeypat
         runtime_root,
         "goal_plus_search_run_verifier",
         {
-            "run_id": run_id,
-            "candidate_id": task.candidate_id,
-            "agent_session_id": session.agent_session_id,
             "hypothesis": "Raise VALUE once",
         },
     )
     assert report["candidate_id"] == task.candidate_id
     if report.get("state") == "pending":
         report = call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
-            "run_id": run_id, "candidate_id": task.candidate_id,
-            "agent_session_id": session.agent_session_id,
             "attempt_id": report["attempt_id"], "timeout_seconds": 10,
         })
     waited = call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
-        "run_id": run_id, "candidate_id": task.candidate_id,
-        "agent_session_id": session.agent_session_id,
         "attempt_id": report["attempt_id"], "timeout_seconds": 0,
     })
     assert waited == report
     assert call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
-        "run_id": run_id, "candidate_id": task.candidate_id,
-        "agent_session_id": session.agent_session_id,
         "attempt_id": report["attempt_id"], "retry": True,
     }) == report
 
     iterations = call_pi_tool(
         runtime_root,
         "goal_plus_search_list_iterations",
-        {"agent_session_id": session.agent_session_id},
+        {},
     )
     assert iterations["items"][0]["agent_session_id"] == session.agent_session_id
 
@@ -432,7 +485,7 @@ def test_pi_worker_tools_are_scoped_to_their_agent_session(
     context = call_pi_tool(
         runtime_root,
         "goal_plus_search_get_agent_context",
-        {"agent_session_id": own.agent_session_id},
+        {},
     )
     assert context["candidate_id"] == tasks[0].candidate_id
 
@@ -490,7 +543,6 @@ def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path, monkeypatch) -
         runtime_root,
         "goal_plus_search_stage_shared_tool",
         {
-            "agent_session_id": session.agent_session_id,
             "name": "trace-helper",
             "summary": "Collect a bounded diagnostic trace.",
             "entrypoint": "trace.py",

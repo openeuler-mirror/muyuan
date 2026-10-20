@@ -1,20 +1,22 @@
 """Deterministic multi-score selection with exact verifier evidence binding."""
 
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, Literal
+from typing import Any, Literal
 
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
-from goal_plus.application.candidate_execution import require_run_not_invalidated
+from goal_plus.application.candidate_execution import require_run_not_invalidated, require_fork_ready
 from goal_plus.application.candidate_ledger import CandidateLedger
+from goal_plus.application.candidate_spec import iteration_spec_id
 from goal_plus.application.candidate_recovery import CandidateRecoveryWorkflow
 from goal_plus.application.goal_authorization import GoalAuthorization
+from goal_plus.application.settlement_verifier import build_dispatch_audit_context, verifier_subject
 from goal_plus.application.verifier import (
     VerifierWorkflow,
 )
-from goal_plus.application.settlement_verifier import verifier_subject
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.evidence import IterationRecord, ScoreReport
 from goal_plus.domain.evidence_policy import (
@@ -37,6 +39,7 @@ from goal_plus.domain.verifier import (
 )
 from goal_plus.ports.candidate_settlement import CandidateSettlementState
 from goal_plus.ports.candidate_verification import CandidateVerificationRequest
+from goal_plus.ports.clock import Clock
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
@@ -167,6 +170,7 @@ class Selection:
         annotation_admission: AnnotationAdmission,
         authorization: GoalAuthorization,
         verifier: VerifierWorkflow,
+        clock: Clock,
         persist_run: Callable[[RunRecord], None],
     ) -> None:
         self.state, self.recovery, self.artifacts, self.candidate_ledger = (
@@ -182,15 +186,27 @@ class Selection:
         )
         self.authorization = authorization
         self.verifier = verifier
+        self.clock = clock
         self.persist_run = persist_run
 
     def select(
         self,
         run_id: str,
         *,
+        frozen_spec_id: str | None = None,
         controller_directive: ControllerSelectionDirective | None = None,
     ) -> Generator[CandidateVerificationRequest, ScoreReport, dict[str, Any]]:
         self.authorization.require_search_execution(run_id)
+        run = self.state.read_run(run_id)
+        selected_spec_id = frozen_spec_id or run.frozen_spec_id
+        allowed_specs = {run.frozen_spec_id} | {
+            revision.frozen_spec_id for candidate in self.state.read_candidates(run_id)
+            for revision in candidate.spec_revisions
+        }
+        if selected_spec_id not in allowed_specs:
+            raise ValueError("SelectionSpecMismatch: version does not belong to this run")
+        frozen = self.state.read_frozen_spec(selected_spec_id)
+        self._assert_required_fork_audits_complete(run_id)
         self._assert_required_evidence_annotations_complete(run_id)
         replay = None
         with self.state.lock_run(run_id):
@@ -205,6 +221,7 @@ class Selection:
                 if (
                     controller_directive is None
                     or run.controller_selection != controller_directive
+                    or (run.selected_frozen_spec_id or run.frozen_spec_id) != selected_spec_id
                 ):
                     raise RuntimeError(
                         "controller selection conflicts with the persisted selection"
@@ -233,11 +250,11 @@ class Selection:
                 run.budget_used.pop("selection_blocked_reason", None)
                 self.persist_run(run)
 
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         if replay is not None:
             selection_spec = frozen.spec.strategy.selection
             return {
                 "selected_candidate_id": replay.selected_candidate_id,
+                "selected_frozen_spec_id": selected_spec_id,
                 "selected_score": replay.selected_score,
                 "selected_hard_score": replay.selected_hard_score,
                 "selected_quality_score": replay.selected_quality_score,
@@ -418,7 +435,11 @@ class Selection:
                 break
             if not is_thinkthread:
                 report = yield CandidateVerificationRequest(
-                    run_id, option_record.candidate_id
+                    run_id, option_record.candidate_id,
+                    frozen_spec_id=selected_spec_id,
+                    iteration=option.iteration.iteration,
+                    artifact_ref=option.artifact_ref,
+                    artifact_hash=option.iteration.artifact_hash,
                 )
                 if report.process_passed and report.aggregate_score is not None:
                     selected = option
@@ -481,6 +502,7 @@ class Selection:
             self.annotation.close_queue(run_id, reason="search_selected")
             run.state = RunState.READY_TO_PROMOTE
             run.selected_candidate_id = selected_record.candidate_id
+            run.selected_frozen_spec_id = selected_spec_id
             run.selected_score = selected.score
             run.selected_hard_score = selected.score
             run.selected_quality_score = selected_values.get("quality_score")
@@ -521,6 +543,7 @@ class Selection:
             self.persist_run(run)
         return {
             "selected_candidate_id": selected_record.candidate_id,
+            "selected_frozen_spec_id": selected_spec_id,
             "selected_score": selected.score,
             "selected_hard_score": selected.score,
             "selected_quality_score": selected_values.get("quality_score"),
@@ -572,7 +595,9 @@ class Selection:
                 )
             for iteration in reversed(record.iterations):
                 if (
-                    not artifact_iteration_eligible(iteration)
+                    iteration_spec_id(run, iteration) != frozen.frozen_spec_id
+                    or (iteration.spec_hash is not None and iteration.spec_hash != frozen.spec_hash)
+                    or not artifact_iteration_eligible(iteration)
                     or iteration.disposition in {"discard", "failure"}
                     or iteration.score is None
                     or iteration.settlement_id is None
@@ -625,5 +650,76 @@ class Selection:
             "required supplemental Evidence annotations are incomplete: "
             + ", ".join(incomplete)
         )
+        self._mark_selection_blocked(run_id, reason)
+        raise RuntimeError(reason)
+
+    def _assert_required_fork_audits_complete(self, run_id: str) -> None:
+        """Validate committed audit subjects before admitting any fork result."""
+        run = self.state.read_run(run_id)
+        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        if not frozen.spec.strategy.fork_enabled:
+            return
+        candidates = self.state.read_candidates(run_id)
+        require_fork_ready(run, frozen, candidates)
+        if frozen.spec.strategy.llm_validation == "off":
+            return
+        tasks = self.verifier.list_tasks(run_id)
+        records = {item.record_id: item for item in self.verifier.list_records(run_id)}
+        pending, failed, branches = [], [], []
+        for branch in run.dispatch_group.targets:
+            candidate = next(c for c in candidates if c.candidate_id == branch.candidate_id)
+            states, record_ids = [], []
+            for iteration in candidate.iterations:
+                execution_spec = self.state.read_frozen_spec(iteration_spec_id(run, iteration))
+                submission = iteration.verifier_submission
+                expected = verifier_subject(execution_spec, candidate, iteration)
+                matching = [
+                    task for task in tasks
+                    if submission is not None and submission.subject == expected
+                    and task.subject == expected and task.input == submission.input
+                    and task.score_contract == submission.score_contract
+                    and task.input.dispatch_audit_context is not None
+                ]
+                status, output_id = "failed", None
+                if len(matching) == 1:
+                    task = matching[0]
+                    audit = task.input.dispatch_audit_context
+                    expected_context = build_dispatch_audit_context(
+                        execution_spec, branch.binding, expected.settlement,
+                    )
+                    # Close facts belong to the committed submission's historical
+                    # snapshot. Task/input exact matching above protects them;
+                    # later host closure must not rebuild that historical input.
+                    exact_context = (
+                        audit.model_copy(update={"close_receipt": {}}) == expected_context
+                    )
+                    if exact_context and task.state in {"pending", "running", "retry_wait"}:
+                        status = "pending"
+                    output = records.get(task.output_record_id)
+                    if (exact_context and task.state == "completed" and output is not None
+                            and output.outcome == "completed" and output.task_id == task.task_id
+                            and output.subject == expected and output.score_contract_hash == task.score_contract.contract_hash):
+                        status, output_id = "completed", output.record_id
+                states.append(status)
+                if output_id:
+                    record_ids.append(output_id)
+                detail = f"{candidate.candidate_id}/iteration-{iteration.iteration:04d}={status}"
+                if status == "pending":
+                    pending.append(detail)
+                elif status == "failed":
+                    failed.append(detail)
+            audit_state = "failed" if "failed" in states else "pending" if not states or "pending" in states else "completed"
+            branches.append(branch.model_copy(update={"audit_state": audit_state,
+                                                       "audit_record_id": record_ids[-1] if record_ids else None}))
+        if branches != run.dispatch_group.targets:
+            with self.state.lock_run(run_id):
+                current = self.state.read_run(run_id)
+                if current.dispatch_group == run.dispatch_group:
+                    current.dispatch_group = run.dispatch_group.model_copy(update={"targets": branches, "updated_at": self.clock.timestamp()})
+                    self.persist_run(current)
+        if frozen.spec.strategy.llm_validation != "required" or not (pending or failed):
+            return
+        reason = ("required fork LLM audit failed or is missing: " if failed else
+                  "required fork LLM audit is pending: ") + ", ".join(failed + pending)
         self._mark_selection_blocked(run_id, reason)
         raise RuntimeError(reason)

@@ -418,31 +418,21 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     initial_requests = {
         "req-context-initial": (
             "goal_plus_search_get_agent_context",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
         "req-evidence-initial": (
             "goal_plus_search_get_global_evidence",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
         "req-iterations-initial": (
             "goal_plus_search_list_iterations",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
         "req-verifier": (
             "goal_plus_search_run_verifier",
             {
-                "run_id": run_id,
-                "candidate_id": candidate_id,
                 "scope": "process",
-                "agent_session_id": agent_session_id,
                 "hypothesis": "Exercise the deferred verifier contract",
-                "toolization_decision": {
-                    "outcome": "not_applicable",
-                    "signals": [],
-                    "exclusion": "no_toolizable_material",
-                    "rationale": "No reusable material was created.",
-                    "tool_names": [],
-                },
             },
         ),
     }
@@ -458,7 +448,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert response_for(client, "req-context-initial")["result"] == call_pi_tool(
         root_dir,
         "goal_plus_search_get_agent_context",
-        {"agent_session_id": agent_session_id},
+        {},
     )
     assert response_for(client, "req-evidence-initial")["result"] == []
     assert response_for(client, "req-iterations-initial")["result"] == {"items": [], "total": 0, "next_offset": None}
@@ -469,7 +459,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert verifier_receipt["run_id"] == run_id
     assert verifier_receipt["candidate_id"] == candidate_id
     assert verifier_receipt["agent_session_id"] == agent_session_id
-    assert verifier_receipt["toolization_decision"] is None
+    assert "toolization_decision" not in verifier_receipt
     assert "next wake" in verifier_receipt["message"]
     assert "global_evidence_snapshot" not in verifier_receipt
 
@@ -529,23 +519,22 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     continued_requests = {
         "req-context-continued": (
             "goal_plus_search_get_agent_context",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
         "req-evidence-continued": (
             "goal_plus_search_get_global_evidence",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
         "req-detail-continued": (
             "goal_plus_search_get_evidence_detail",
             {
-                "agent_session_id": agent_session_id,
                 "candidate_id": candidate_id,
                 "iteration": 1,
             },
         ),
         "req-iterations-continued": (
             "goal_plus_search_list_iterations",
-            {"agent_session_id": agent_session_id},
+            {},
         ),
     }
     for request_id, (tool, params) in continued_requests.items():
@@ -556,11 +545,21 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     wait_for_response(client, "req-iterations-continued", timeout_seconds=5)
 
     continued_context = response_for(client, "req-context-continued")["result"]
-    assert continued_context == call_pi_tool(
+    direct_context = call_pi_tool(
         root_dir,
         "goal_plus_search_get_agent_context",
-        {"agent_session_id": agent_session_id},
+        {},
     )
+    delivery_fields = {"global_evidence_update", "global_evidence_snapshot"}
+    assert {
+        key: value for key, value in continued_context.items() if key not in delivery_fields
+    } == {
+        key: value for key, value in direct_context.items() if key not in delivery_fields
+    }
+    update = continued_context["global_evidence_update"]
+    assert update["delivery"] == "delta"
+    assert direct_context["global_evidence_update"]["delivery"] == "unchanged"
+    assert direct_context["global_evidence_update"]["snapshot_id"] == update["snapshot_id"]
     assert continued_context["recent_iterations"][-1]["iteration"] == 1
     assert (
         continued_context["recent_iterations"][-1]["attempt_id"]
@@ -580,19 +579,21 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert proxy_evidence == call_pi_tool(
         root_dir,
         "goal_plus_search_get_global_evidence",
-        {"agent_session_id": agent_session_id},
+        {},
     )
     assert [(item["candidate_id"], item["iteration"]) for item in proxy_evidence] == [
         (candidate_id, 1)
     ]
-    assert continued_context["global_evidence_snapshot"] == proxy_evidence
+    assert update["added"] == proxy_evidence
+    assert update["changed"] == []
+    assert update["removed"] == []
+    assert continued_context["global_evidence_snapshot"] == []
     detail_response = response_for(client, "req-detail-continued")
     assert detail_response["ok"] is True, detail_response
     assert detail_response["result"] == call_pi_tool(
         root_dir,
         "goal_plus_search_get_evidence_detail",
         {
-            "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
             "iteration": 1,
         },
@@ -600,7 +601,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert response_for(client, "req-iterations-continued")["result"] == call_pi_tool(
         root_dir,
         "goal_plus_search_list_iterations",
-        {"agent_session_id": agent_session_id},
+        {},
     )
 
 

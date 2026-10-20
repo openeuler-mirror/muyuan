@@ -93,10 +93,9 @@ def _filter_available_models(
 
 
 WORKER_BOUNDARY = (
-    "你是 Search 候选 worker，不是搜索编排器。首先使用提供的 agent_session_id "
-    "调用 goal_plus_search_get_agent_context，以返回的 candidate_task 为当前工作契约：只在其中指定的 "
-    "workspace 工作，遵守可修改范围和 instructions。独立选择候选内的技术方向；规划、创建"
-    "其他 candidate、最终选择、报告和 promotion 属于父 agent。"
+    "你是 Search 候选 worker，不是搜索编排器。首先调用绑定的 "
+    "goal_plus_search_get_agent_context()，再遵守返回的 candidate_task；"
+    "规划、创建其他 candidate、最终选择、报告和 promotion 属于父 agent。"
 )
 
 
@@ -226,7 +225,6 @@ class CodexCandidateLaunch:
                 f"{_worker_contract(worker_prompt)}\n\n"
                 f"agent_session_id={agent_session_id}; "
                 f"candidate_id={candidate_id}; "
-                f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
                 f"思路：{one_paragraph_idea}"
             ),
         }
@@ -357,13 +355,13 @@ class PiRpcCandidateLaunch:
         worker_budget: dict[str, Any] | None = None,
         resume: bool = False,
     ) -> str:
-        labels = (
-            f"agent_session_id={agent_session_id}; "
-            f"candidate_id={candidate_id}; "
-            f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
-            f"思路：{one_paragraph_idea}"
-        )
         if resume:
+            labels = (
+                f"agent_session_id={agent_session_id}; "
+                f"candidate_id={candidate_id}; "
+                f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
+                f"思路：{one_paragraph_idea}"
+            )
             labels = "continue_existing_agent_session=true; " + labels
             return (
                 "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；"
@@ -371,6 +369,11 @@ class PiRpcCandidateLaunch:
                 f"\n\nLaunch 标签：{labels}"
             )
         header = _worker_contract(worker_prompt)
+        labels = (
+            f"agent_session_id={agent_session_id}; "
+            f"candidate_id={candidate_id}; "
+            f"思路：{one_paragraph_idea}"
+        )
         return f"{header}\n\nLaunch 标签：{labels}"
 
     def build_launch_payload(
@@ -520,8 +523,8 @@ class ThinkThreadCandidateLaunch:
     def __init__(self, agent_harness: AgentHarnessKind = "pi") -> None:
         self.name = agent_harness
 
-    @staticmethod
     def _validate_worker_launch(
+        self,
         worker_launch: dict[str, Any] | None,
     ) -> dict[str, str] | None:
         if not worker_launch:
@@ -534,6 +537,10 @@ class ThinkThreadCandidateLaunch:
         model = worker_launch.get("model")
         if model is None:
             return None
+        if not _execution_binding(self.name, self.runtime_provider).capabilities.supports_model_override:
+            raise UnsupportedHostCapability(
+                f"{self.name} thinkthread does not support model override"
+            )
         if not isinstance(model, str) or "/" not in model:
             raise UnsupportedHostCapability(
                 "thinkthread model selection requires exact provider/model"
@@ -565,12 +572,11 @@ class ThinkThreadCandidateLaunch:
                 f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
                 f"本轮目标：{one_paragraph_idea}"
             )
-        header = (worker_prompt or "首先调用 goal_plus_search_get_agent_context。").strip()
+        header = (worker_prompt or "首先调用绑定的 goal_plus_search_get_agent_context()。").strip()
         return (
             f"{header}\n\n"
             "continue_existing_agent_session=false; "
             f"agent_session_id={agent_session_id}; candidate_id={candidate_id}; "
-            f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
             f"思路：{one_paragraph_idea}"
         )
 

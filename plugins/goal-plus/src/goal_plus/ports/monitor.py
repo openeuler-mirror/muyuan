@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any
-from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
 from goal_plus.domain.verifier import VerifierRecord, VerifierTask
 from goal_plus.ports.state import CandidateRecord
 
@@ -11,7 +11,7 @@ from goal_plus.ports.state import CandidateRecord
 class MonitorCandidateInputs:
     candidate: CandidateRecord
     sessions: list[AgentSessionRecord]
-    metric_direction: str
+    frozen: FrozenSpec
     verifier_enabled: bool
     verifier_records: list[VerifierRecord]
     verifier_tasks: list[VerifierTask]

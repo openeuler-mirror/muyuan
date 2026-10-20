@@ -52,7 +52,8 @@ class State(FileSteeringState):
             session_handle=AgentSessionHandle(external_id="native_1"),
             created_at=receipt.created_at, updated_at=receipt.created_at)
         self.frozen = SimpleNamespace(agent_harness="codex", runtime_provider="direct",
-            spec=SimpleNamespace(strategy=SimpleNamespace(orchestration_mode="adaptive_search")))
+            spec=SimpleNamespace(strategy=SimpleNamespace(
+                adaptive_search_enabled=True, fork_enabled=False)))
         self.decisions = []
 
     def read_run(self, run_id):

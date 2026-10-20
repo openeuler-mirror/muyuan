@@ -1,7 +1,7 @@
 """Candidate ledger state and projections with explicit workspace I/O ports."""
 
 from pathlib import Path
-from goal_plus.application.candidate_ranking import top_records
+from goal_plus.application.candidate_ranking import records_by_created, top_records
 from goal_plus.domain.results_ledger import RESULTS_TSV_RELATIVE_PATH
 from goal_plus.domain.search import CandidateTask, FrozenSpec
 from goal_plus.domain.agents import (
@@ -39,6 +39,8 @@ def backfill_results_ledger_from_iterations(
             ResultLedgerEntry(
                 source_run_id=record.task.run_id,
                 source_candidate_id=record.candidate_id,
+                frozen_spec_id=iteration.frozen_spec_id,
+                spec_hash=iteration.spec_hash,
                 iteration=iteration.iteration,
                 git_head=iteration.git_head,
                 ledger_git_head=iteration.ledger_git_head,
@@ -67,7 +69,13 @@ def render_thinkthread_inner_git_results_tsv(
         private_head = private_heads.get(str(entry.iteration))
         if valid_inner_git_head(private_head):
             entry.git_head = str(private_head)
-    return render_results_tsv(entries, metric_name)
+    return render_results_tsv(entries, ledger_metric_name(record, metric_name),
+                              candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None)
+
+
+def ledger_metric_name(record: CandidateRecord, metric_name: str) -> str:
+    """The legacy TSV header stays fixed; each persisted row retains its real metric."""
+    return record.results_ledger_metric_name or metric_name
 
 
 class CandidateLedger:
@@ -97,7 +105,12 @@ class CandidateLedger:
                 return record
         if not records:
             return None
-        frontier = top_records(records, source_frozen.spec, 1)
+        spec_ids = {record.active_frozen_spec_id or source_run.frozen_spec_id for record in records}
+        if len(spec_ids) > 1:
+            frontier = records_by_created(records)[:1]
+        else:
+            ranking_frozen = self.state.read_frozen_spec(next(iter(spec_ids)))
+            frontier = top_records(records, ranking_frozen.spec, 1)
         if not frontier:
             return None
         record = frontier[0]
@@ -134,6 +147,9 @@ class CandidateLedger:
         record: CandidateRecord,
         metric_name: str,
     ) -> Path:
+        if record.results_ledger_metric_name is None:
+            record.results_ledger_metric_name = metric_name
+        metric_name = ledger_metric_name(record, metric_name)
         if (
             record.results_ledger_artifact_ref is not None
             or record.results_ledger_git_head is not None
@@ -146,7 +162,8 @@ class CandidateLedger:
         path = record.task.workspace / RESULTS_TSV_RELATIVE_PATH
         ledger_artifact_ref = self.workspace.initialize(
             record,
-            render_results_tsv(record.results_ledger, metric_name),
+            render_results_tsv(record.results_ledger, metric_name,
+                               candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None),
             f"goal-plus results ledger sync {record.candidate_id}",
         )
         ledger_git_head = (
@@ -256,11 +273,14 @@ class CandidateLedger:
         entry: ResultLedgerEntry,
         metric_name: str,
     ) -> str | None:
+        metric_name = ledger_metric_name(record, metric_name)
         self.workspace.check(record, metric_name)
-        before = render_results_tsv(record.results_ledger, metric_name)
+        before = render_results_tsv(record.results_ledger, metric_name,
+                                    candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None)
         after = render_results_tsv(
             [*record.results_ledger, entry],
             metric_name,
+            candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None,
         )
         if not after.startswith(before) or len(after.splitlines()) != len(
             before.splitlines()

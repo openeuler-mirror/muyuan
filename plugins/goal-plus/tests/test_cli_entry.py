@@ -199,7 +199,7 @@ def test_cli_mcp_uses_host_role_and_shared_overview(tmp_path: Path, role: str) -
                 result = await client.call_tool("goal_plus_search_get_agent_context", {
                     "agent_session_id": "foreign-candidate",
                 }, raise_on_error=False)
-                assert result.is_error and "GoalPlusSessionMismatch" in result.content[0].text
+                assert result.is_error and "Unexpected keyword argument" in result.content[0].text
 
     asyncio.run(exercise())
     if role == "candidate":

@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Any
+from goal_plus.application.candidate_ranking import best_iteration_record
 from goal_plus.ports.monitor import MonitorCandidateInputs, MonitorSessionInputs
 from goal_plus.projections.monitor import (
-    best_candidate_iteration,
     project_context_usage,
     session_liveness,
     observability_cost,
@@ -31,7 +31,7 @@ def _avg_round_seconds(iterations: list[Any]) -> float | None:
 def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
     candidate, candidate_sessions = inputs.candidate, inputs.sessions
     last_iteration = candidate.iterations[-1] if candidate.iterations else None
-    best_iteration = best_candidate_iteration(candidate, inputs.metric_direction)
+    best_iteration = best_iteration_record(candidate, inputs.frozen.spec.metric_direction)
     workspace_ledger_projection, results_tsv = (
         inputs.ledger_projection,
         inputs.results_tsv,
@@ -66,6 +66,14 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
             )
     candidate_payload = {
         "candidate_id": candidate.candidate_id,
+        "frozen_spec_id": inputs.frozen.frozen_spec_id,
+        "spec_hash": inputs.frozen.spec_hash,
+        "active_frozen_spec_id": inputs.frozen.frozen_spec_id,
+        "active_spec_hash": inputs.frozen.spec_hash,
+        "metric_name": inputs.frozen.spec.metric_name,
+        "metric_direction": inputs.frozen.spec.metric_direction,
+        "spec_revisions": [item.model_dump(mode="json") for item in candidate.spec_revisions],
+        "candidate_origin": candidate.task.candidate_origin.model_dump(mode="json") if candidate.task.candidate_origin else None,
         "status": candidate.status,
         "plan_id": candidate.task.plan_id,
         "parent_id": candidate.task.parent_id,
@@ -78,6 +86,14 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
         ),
         "verifier_count": len(candidate.iterations),
         "last_score": last_iteration.score if last_iteration else None,
+        "last_frozen_spec_id": (
+            last_iteration.frozen_spec_id or (
+                candidate.spec_revisions[0].parent_frozen_spec_id
+                if candidate.spec_revisions else inputs.frozen.frozen_spec_id
+            )
+            if last_iteration else None
+        ),
+        "last_spec_hash": last_iteration.spec_hash if last_iteration else None,
         "last_disposition": (last_iteration.disposition if last_iteration else None),
         "last_verifier_at": last_iteration.created_at if last_iteration else None,
         "last_git_head": last_iteration.git_head if last_iteration else None,
@@ -257,6 +273,7 @@ def project_session(
             "candidate_id": session.candidate_id,
             "agent_harness": session.agent_harness,
             "runtime_provider": session.runtime_provider,
+            "candidate_origin": session.candidate_origin.model_dump(mode="json") if session.candidate_origin else None,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "attempt_count": dispatch_count,

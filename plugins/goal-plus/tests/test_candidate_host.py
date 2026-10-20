@@ -35,8 +35,8 @@ def candidate_host(tmp_path, monkeypatch, request):
         spec.strategy.worker_budget = None
     elif mode in {"adaptive", "codex_adaptive"}:
         payload = spec.model_dump(mode="json")
-        payload["strategy"]["orchestration_mode"] = "adaptive_search"
-        payload["strategy"]["allocation"] = {"policy": "swe_search_uct/v1"}
+        payload["strategy"]["initial_context"] = "fresh"
+        payload["strategy"]["adaptive_search"] = {"allocation": {"policy": "swe_search_uct/v1"}}
         spec = SearchSpec.model_validate(payload)
     frozen = runtime.freeze_spec(
         spec, [project / "evaluator.py"], agent_harness=agent_harness
@@ -71,13 +71,13 @@ def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> No
     spec_data["workspace"] = {"provider": "git_worktree"}
     spec_data["strategy"] = {
         "name": "random",
-        "orchestration_mode": "adaptive_search",
+        "initial_context": "fresh",
         "selection": {
             "ranking_keys": ["quality_score", "hard_score"],
             "ranking_tolerance": [0.05, 0.0],
         },
         "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-        "allocation": {"policy": "swe_search_uct/v1"},
+        "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
     }
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),

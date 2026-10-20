@@ -1,5 +1,6 @@
 """Translate admitted role inputs and the Main's frozen facts to native input."""
 
+import json
 import os
 import sys
 from collections.abc import Mapping
@@ -21,13 +22,39 @@ from goal_plus.ports.scope import ScopeRecord
 from goal_plus.ports.session import NativeSessionInput, SessionProcessInput
 
 
+def _fork_pi_session_file(root: Path, session: AgentSessionRecord) -> Path | None:
+    """Resolve a provider-created fork file across Pi's project session layout."""
+    if getattr(session, "candidate_origin", None) is None or not session.session_handle.external_id:
+        return None
+    session_id = session.session_handle.external_id
+    session_dir = root / "host-sessions" / "pi"
+    matches: list[Path] = []
+    for path in session_dir.rglob(f"*_{session_id}.jsonl"):
+        try:
+            with path.open(encoding="utf-8") as stream:
+                header = json.loads(stream.readline())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(header, dict)
+            and header.get("type") == "session"
+            and header.get("id") == session_id
+            and isinstance(header.get("cwd"), str)
+            and Path(header["cwd"]).resolve() == session.workspace.resolve()
+        ):
+            matches.append(path.resolve())
+    if len(matches) > 1:
+        raise RuntimeError("native Pi fork session file is ambiguous")
+    return matches[0] if matches else None
+
+
 def _native_environment(root: Path) -> dict[str, str]:
     environment = {
         key: value for key, value in os.environ.items()
         if not key.startswith("GOAL_PLUS_") and key != "CODEX_THREAD_ID"
     }
-    # Preserve installation identity and diagnostic policy, not parent role/session state.
-    for key in ("GOAL_PLUS_PI_DEV_ROOT", "GOAL_PLUS_PYTHON", "GOAL_PLUS_DEBUG"):
+    # Preserve installation identity and operational policy, not parent role/session state.
+    for key in ("GOAL_PLUS_PI_DEV_ROOT", "GOAL_PLUS_PYTHON", "GOAL_PLUS_DEBUG", "GOAL_PLUS_TMPDIR"):
         if key in os.environ:
             environment[key] = os.environ[key]
     environment["GOAL_PLUS_ROOT"] = str(root)
@@ -42,6 +69,7 @@ def _sandbox(
     runtime_root: Path,
     session_dir: Path,
     resource_lock_root: Path | None = None,
+    additional_writable_roots: tuple[Path, ...] = (),
 ) -> ProcessSandbox:
     """Declare the child boundary; the execution layer selects the OS backend."""
     return ProcessSandbox(
@@ -51,7 +79,12 @@ def _sandbox(
         # The Goal Plus MCP bridge runs inside the Pi child and must update its
         # own durable runtime state.  This is trusted host state, not an extra
         # source workspace.
-        writable_roots=(runtime_root, session_dir, *((resource_lock_root,) if resource_lock_root else ())),
+        writable_roots=(
+            runtime_root,
+            session_dir,
+            *additional_writable_roots,
+            *((resource_lock_root,) if resource_lock_root else ()),
+        ),
     )
 
 
@@ -103,19 +136,25 @@ def native_candidate_input(
         raise FileNotFoundError(f"Pi extension not found: {extension}")
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
-    prepare_pi_home(session_dir, environment)
+    prepare_pi_home(session_dir / "pi-home", environment)
     environment.update({
         "GOAL_PLUS_PI_ROLE": "worker",
         "GOAL_PLUS_AGENT_SESSION_ID": session.agent_session_id,
         "GOAL_PLUS_PI_SANDBOX": "seatbelt" if sys.platform == "darwin" else "bubblewrap",
     })
+    session_selector = native_session_id
+    if resume and session.candidate_origin is not None:
+        session_file = _fork_pi_session_file(root, session)
+        if session_file is None:
+            raise RuntimeError("ForkSessionFileUnavailable")
+        session_selector = str(session_file)
     return NativeSessionInput(
         agent_harness=agent_harness,
         process=SessionProcessInput(
             (
                 "pi", "--mode", "rpc", "--approve", "--no-context-files",
                 "--session-dir", str(session_dir), "--session" if resume else "--session-id",
-                native_session_id if resume else session.agent_session_id,
+                session_selector if resume else session.agent_session_id,
                 "--no-extensions", "-e", str(extension),
             ), session.workspace, environment,
             _sandbox(
@@ -160,7 +199,7 @@ def native_final_check_input(
     environment["GOAL_PLUS_PI_SANDBOX"] = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
-    prepare_pi_home(session_dir, environment)
+    prepare_pi_home(session_dir / "pi-home", environment)
     return NativeSessionInput(
         agent_harness=agent_harness,
         process=SessionProcessInput(
@@ -208,7 +247,7 @@ def native_work_item_input(
     environment["GOAL_PLUS_PI_SANDBOX"] = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
-    prepare_pi_home(session_dir, environment)
+    prepare_pi_home(session_dir / "pi-home", environment)
     return NativeSessionInput(
         agent_harness=agent_harness,
         process=SessionProcessInput(

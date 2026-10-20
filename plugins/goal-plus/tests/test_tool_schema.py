@@ -3,6 +3,7 @@ from copy import deepcopy
 import json
 
 import pytest
+from fastmcp import Client
 from fastmcp.utilities.json_schema import dereference_refs
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
@@ -90,9 +91,33 @@ def test_nullable_compaction_keeps_constraints_that_reject_null():
     assert not validator.is_valid("other")
 
 
+def test_mcp_compaction_preserves_instance_data_and_mixed_enum_constraints():
+    instance = {"type": "string", "enum": ["x"], "additionalProperties": True}
+    schema = {
+        "type": "object",
+        "properties": {
+            "data": {"type": "object", "default": instance, "examples": [instance]},
+            "choice": {"type": "string", "enum": ["x", 1]},
+        },
+    }
+    compact = compact_tool_schema(schema, prune_additional_properties=True)
+    assert compact["properties"]["data"]["default"] == instance
+    assert compact["properties"]["data"]["examples"] == [instance]
+    before, after = Draft202012Validator(schema), Draft202012Validator(compact)
+    for choice in ("x", 1, "other"):
+        assert after.is_valid({"choice": choice}) == before.is_valid({"choice": choice})
+
+
 def test_freeze_schema_stays_below_codex_structural_compaction_budget(tmp_path):
-    tool = next(tool for tool in asyncio.run(create_mcp(tmp_path).list_tools())
-                if tool.name == "goal_plus_search_freeze_spec")
+    async def read_schema():
+        async with Client(create_mcp(tmp_path)) as client:
+            response = await client.call_tool(
+                "goal_plus_get_tool_schema",
+                {"tool_name": "goal_plus_search_freeze_spec"},
+            )
+            return json.loads(response.content[0].text)["inputSchema"]
+
+    schema = asyncio.run(read_schema())
     # Codex 0.154.0 tools/src/json_schema/{types,compaction}.rs measures this
     # subset after removing descriptions, before dropping refs or nested fields.
     keys = {"$ref", "type", "enum", "items", "minItems", "properties", "required",
@@ -118,7 +143,7 @@ def test_freeze_schema_stays_below_codex_structural_compaction_budget(tmp_path):
                 result[key] = [normalize(child) for child in result[key]]
         return result
 
-    normalized = normalize(tool.parameters)
+    normalized = normalize(schema)
     # The complete adaptive policy contract is served with MCP-only
     # additionalProperties pruning; Pydantic remains authoritative at call time.
     # Budget includes the shared_cache spec surface (sections, verifier
@@ -130,9 +155,16 @@ def test_freeze_schema_stays_below_codex_structural_compaction_budget(tmp_path):
 
 
 def test_registered_freeze_schema_matches_parameter_validation(tmp_path):
-    tool = next(tool for tool in asyncio.run(create_mcp(tmp_path).list_tools())
-                if tool.name == "goal_plus_search_freeze_spec")
-    validator = Draft202012Validator(tool.parameters)
+    async def read_schema():
+        async with Client(create_mcp(tmp_path)) as client:
+            response = await client.call_tool(
+                "goal_plus_get_tool_schema",
+                {"tool_name": "goal_plus_search_freeze_spec"},
+            )
+            return json.loads(response.content[0].text)["inputSchema"]
+
+    schema = asyncio.run(read_schema())
+    validator = Draft202012Validator(schema)
     for strategy, valid in [
         ({"name": "agent_guided"}, True),
         ({"name": "random"}, True),
@@ -148,16 +180,16 @@ def test_registered_freeze_schema_matches_parameter_validation(tmp_path):
         ({"selection": {"ranking_tolerance": [-0.1]}}, False),
         ({"selection": {"ranking_tolerance": [0.1]}}, True),
         ({"selection": {"ranking_keys": ["hard_score", "hard_score"], "ranking_tolerance": [0, 0]}}, False),
-        ({"orchestration_mode": "adaptive_search", "allocation": {"features": ["progress_trend/v1"]}}, False),
-        ({"orchestration_mode": "adaptive_search",
-          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-          "allocation": {"policy": "swe_search_uct/v1"}}, True),
-        ({"orchestration_mode": "adaptive_search",
-          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-          "allocation": {"policy": "unknown/v1"}}, False),
-        ({"orchestration_mode": "adaptive_search",
-          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-          "allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}}}, False),
+        ({"initial_context": "fresh", "adaptive_search": {"allocation": {"features": ["progress_trend/v1"]}}}, False),
+        ({"initial_context": "fresh",
+              "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+              "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}}}, True),
+        ({"initial_context": "fresh",
+              "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+              "adaptive_search": {"allocation": {"policy": "unknown/v1"}}}, False),
+        ({"initial_context": "fresh",
+              "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+              "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}}}}, False),
     ]:
         spec = {**spec_dict(), "strategy": strategy}
         arguments = {"goal_plus_id": "gp_0001", "spec": spec, "verifier_artifact_paths": ["evaluator.py"]}

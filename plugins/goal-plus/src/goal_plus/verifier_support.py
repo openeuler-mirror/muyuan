@@ -8,10 +8,10 @@ import math
 import os
 from pathlib import Path
 import shutil
-import tempfile
 from typing import Iterable, Iterator, Mapping
 
 from goal_plus.workspaces import copy_source_tree
+from goal_plus.temp import temporary_directory
 
 
 VERIFIER_TMPDIR_ENV = "GOAL_PLUS_VERIFIER_TMPDIR"
@@ -63,14 +63,12 @@ def isolated_verifier_workspace(
         raise ValueError(f"verifier workspace is not a directory: {live}")
 
     provided_temp = os.environ.get(VERIFIER_TMPDIR_ENV)
-    managed_temp: tempfile.TemporaryDirectory[str] | None = None
+    managed_temp = None
     if provided_temp:
         temp_root = Path(provided_temp).resolve()
         temp_root.mkdir(parents=True, exist_ok=True)
     else:
-        managed_temp = tempfile.TemporaryDirectory(
-            prefix="goal-plus-verifier-local-"
-        )
+        managed_temp = temporary_directory(prefix="goal-plus-verifier-local-")
         temp_root = Path(managed_temp.name).resolve()
 
     try:

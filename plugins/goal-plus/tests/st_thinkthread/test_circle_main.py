@@ -4,7 +4,6 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import pty
 import select
 import signal
@@ -13,9 +12,17 @@ import subprocess
 import sys
 import termios
 import time
+from pathlib import Path
 
 import pytest
 
+from tests.st_thinkthread.fork_circle import (
+    assert_fork_evidence,
+    assert_fork_prepared,
+    assert_fork_not_terminally_failed,
+    capture_fork_provider_evidence,
+    native_preparation_context,
+)
 
 pytestmark = [pytest.mark.st, pytest.mark.st_pi_thinkthread, pytest.mark.thinkthread_linux]
 ROOT = Path(__file__).resolve().parents[2]
@@ -201,7 +208,7 @@ def assert_circle_evidence(runtime_root: Path, run_dir: Path, *, bounded: bool) 
     }
 
 
-@pytest.mark.parametrize("prompt_kind", ["bounded", "example", "three_rounds"])
+@pytest.mark.parametrize("prompt_kind", ["bounded", "example", "three_rounds", "fork"])
 def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, prompt_kind):
     base, state_root = thinkthread_root
     workspace = base / "circle"
@@ -212,6 +219,7 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
             str(example / "prepare_workspace.py"),
             "--destination",
             str(workspace),
+            *(["--fork"] if prompt_kind == "fork" else []),
         ],
         check=True,
         capture_output=True,
@@ -240,6 +248,10 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         prompt = prompt.replace("max_duration_seconds=1200", "max_duration_seconds=1800").replace(
             "one further bounded improvement", "two further separately dispatched bounded improvements",
         ).replace("Four candidate deliveries are sufficient", "Six candidate deliveries, three per same retained Child, are required")
+    resume_prompt = None
+    if prompt_kind == "fork":
+        prompt = (example / "pi-goal-prompt-fork.md").read_text().strip()
+        resume_prompt = "/goal-plus resume " + (example / "fork-resume-task.md").read_text().strip()
     command = [
         "tt",
         "run",
@@ -249,12 +261,10 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         str(workspace),
         "--state-root",
         str(state_root),
-        "--",
-        "--thinking",
-        os.environ.get("ST_PI_THINKING", "low"),
     ]
     if model := os.environ.get("ST_PI_MODEL"):
         command.extend(["--model", model])
+    command.extend(["--", "--thinking", os.environ.get("ST_PI_THINKING", "low")])
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
 
@@ -267,7 +277,8 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         command,
         cwd=ROOT,
         env={
-            **os.environ,
+            **{key: value for key, value in os.environ.items()
+               if key != "GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED"},
             **({"GOAL_PLUS_DEBUG": "1"} if prompt_kind == "three_rounds" else {}),
             "TERM": "xterm-256color",
             "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED": "1",
@@ -286,9 +297,14 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
     goal_path = None
     runtime_root = None
     root_id = None
+    preparation_evidence = None
+    preparation_context = None
+    provider_evidence = None
     try:
         with log_path.open("wb") as log:
-            deadline = time.monotonic() + (2100 if prompt_kind == "three_rounds" else 1500)
+            deadline = time.monotonic() + (
+                2100 if prompt_kind in {"three_rounds", "fork"} else 1500
+            )
             while time.monotonic() < deadline:
                 assert process.poll() is None, (
                     f"Native Root exited before completion: {log_path}"
@@ -331,6 +347,29 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
                 [goal_path] = goals
                 runtime_root = goal_path.parents[2]
                 goal = json.loads(goal_path.read_text())
+                assert_fork_not_terminally_failed(
+                    runtime_root, goal, resumed=preparation_evidence is not None,
+                )
+                if (
+                    resume_prompt is not None
+                    and preparation_evidence is None
+                    and goal["status"] == "blocked"
+                    and roots
+                    and root_state["sessionState"] == "ready"
+                ):
+                    prepared = assert_fork_prepared(runtime_root, goal)
+                    context = native_preparation_context(
+                        state_root, root_id, "pi", run_id=prepared["run_id"],
+                    )
+                    if context is not None:
+                        preparation_evidence, preparation_context = prepared, context
+                        os.write(master, b"\x1b[200~" + resume_prompt.encode() + b"\x1b[201~")
+                        paste_at = now
+                        submitted = False
+                if preparation_context is not None and provider_evidence is None:
+                    provider_evidence = capture_fork_provider_evidence(
+                        runtime_root, state_root, root_id, "pi", preparation_context,
+                    )
                 scopes = [
                     json.loads(path.read_text())
                     for path in (runtime_root / "host-scopes").glob("*/scope.json")
@@ -362,7 +401,7 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
             for path in (run_dir / "candidates").glob("*/candidate.json")
         ]
         assert {item["candidate_id"] for item in candidates} == {"c001", "c002"}
-        minimum = {"bounded": 2, "example": 1, "three_rounds": 3}[prompt_kind]
+        minimum = {"bounded": 2, "example": 1, "three_rounds": 3, "fork": 2}[prompt_kind]
         assert all(len(item["iterations"]) >= minimum for item in candidates)
         sessions = [
             json.loads(path.read_text())
@@ -372,7 +411,16 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         assert len({item["session_handle"]["external_id"] for item in sessions}) == 2
         assert all(item["agent_harness"] == "pi" and item["runtime_provider"] == "thinkthread"
                    for item in sessions)
-        evidence = assert_circle_evidence(runtime_root, run_dir, bounded=prompt_kind == "bounded")
+        evidence = assert_circle_evidence(
+            runtime_root, run_dir, bounded=prompt_kind in {"bounded", "fork"},
+        )
+        if prompt_kind == "fork":
+            assert preparation_evidence is not None and provider_evidence is not None
+            evidence["fork"] = assert_fork_evidence(
+                runtime_root, run_dir, root_id=root_id,
+                agent_harness="pi", preparation=preparation_evidence,
+                provider_evidence=provider_evidence,
+            )
         if prompt_kind == "three_rounds":
             assert_circle_diagnostics(runtime_root, sessions, state_root.parent)
         assert (run_dir / "report.md").is_file() and (run_dir / "report.html").is_file()

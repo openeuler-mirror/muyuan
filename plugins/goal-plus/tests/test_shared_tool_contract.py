@@ -68,7 +68,7 @@ def test_bound_candidate_mcp_rejects_peer_identity_before_reading_state(tmp_path
 
     result = asyncio.run(call())
     assert result.is_error
-    assert "GoalPlusSessionMismatch" in result.content[0].text
+    assert "Unexpected keyword argument" in result.content[0].text
     assert not root.exists()
 
 
@@ -81,6 +81,6 @@ def test_native_session_bridge_uses_bound_mcp_schema_and_call(tmp_path):
     root = tmp_path / ".gp"
     bridge = McpSessionToolBridge(root, caller_role="candidate", caller_agent_session_id="owned")
     assert {tool.name for tool in bridge.definitions} == CANDIDATE_TOOL_NAMES
-    with pytest.raises(RuntimeError, match="GoalPlusSessionMismatch"):
+    with pytest.raises(RuntimeError, match="Unexpected keyword argument"):
         bridge.call("goal_plus_search_get_agent_context", {"agent_session_id": "peer"})
     assert not root.exists()

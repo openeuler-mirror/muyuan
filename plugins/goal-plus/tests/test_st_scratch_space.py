@@ -1,10 +1,9 @@
 """Guard the scratch space that real-host system tests run in.
 
-ST run directories used to be created under ``<repo>/.tmp`` with
-``tempfile.mkdtemp`` and were never removed, so the checkout-local ``.tmp`` grew
-without bound. These cases pin the two properties that replace it: scratch space
-lives outside the checkout, and a run directory is released once its test
-finishes.
+ST run directories used to be created in the host's global tempfile directory.
+These cases pin the checkout-local contract: the default scratch base is
+``$PWD/.tmp/st``, an explicit override is honored, and a run directory is
+released once its test finishes.
 """
 
 from __future__ import annotations
@@ -16,13 +15,12 @@ from pathlib import Path
 import pytest
 
 from tests._st_tmp import (
-    REPO_ROOT,
     TMP_ENV,
     new_st_log_dir,
     new_st_run_dir,
     st_tmp_root,
 )
-from tests._test_tmp import DEBUG_ENV
+from tests._test_tmp import DEBUG_ENV, TMP_ENV as TEST_TMP_ENV
 
 pytest_plugins = ["pytester"]
 
@@ -37,10 +35,20 @@ def _make_test_tree_removable(root: Path) -> None:
                 child.chmod(child.stat().st_mode | stat.S_IRWXU)
 
 
-def test_scratch_base_stays_outside_the_checkout() -> None:
+def test_scratch_base_defaults_to_the_checkout_tmp_tree() -> None:
     base = st_tmp_root()
-    assert base != REPO_ROOT
-    assert REPO_ROOT not in base.parents
+    assert base == (Path.cwd() / ".tmp" / "st").resolve()
+    assert base.parent == (Path.cwd() / ".tmp").resolve()
+
+
+def test_pytest_tmp_path_defaults_to_the_checkout_tmp_tree(tmp_path) -> None:
+    configured = os.environ.get(TEST_TMP_ENV)
+    expected = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else (Path.cwd() / ".tmp" / "pytest").resolve()
+    )
+    assert expected in tmp_path.parents
 
 
 def test_scratch_base_follows_the_environment_override(tmp_path, monkeypatch) -> None:
@@ -111,7 +119,7 @@ def test_fixture_uses_the_scratch_base_and_releases_it(scratch_suite) -> None:
 
     result.assert_outcomes(passed=1)
     recorded = Path((scratch_suite.path / "scratch-root.txt").read_text())
-    assert REPO_ROOT not in recorded.parents
+    assert recorded.parent == scratch_suite.path / "scratch" / "st-runs"
     assert not recorded.exists()
 
 

@@ -4,7 +4,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Protocol
 
-from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
+from goal_plus.domain.search import AgentSessionRecord, DispatchGroupState, FrozenSpec
 from goal_plus.ports.candidate_host import CandidateHostSource
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
@@ -13,6 +13,7 @@ MAX_MODEL_HANDOFF_BYTES = 64 * 1024
 
 
 class CandidateSessionState(CandidateHostSource, Protocol):
+    def write_dispatch_group(self, run_id: str, group: DispatchGroupState) -> None: ...
     def write_candidate_binding(self, record: CandidateRecord) -> None: ...
     def write_execution_generation(self, record: CandidateRecord) -> None: ...
     def lock_run(self, run_id: str) -> AbstractContextManager[None]: ...
@@ -21,6 +22,7 @@ class CandidateSessionState(CandidateHostSource, Protocol):
 
 
 class CandidateLaunch(Protocol):
+    def supports_fork(self, frozen: FrozenSpec) -> bool: ...
     def prepare(
         self,
         frozen: FrozenSpec,

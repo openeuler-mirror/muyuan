@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import html
 import json
 from typing import Any
@@ -47,6 +48,20 @@ class AgentTranscriptSession:
     warnings: list[str] = field(default_factory=list)
     model: str = ""    # e.g. "glm-5.3-flash (zai)" from the last observed model_change
     thinking: str = "" # pi thinkingLevel / codex reasoning effort, last observed
+    report_context: dict[str, Any] = field(default_factory=dict)
+
+
+def transcript_anchor(session: AgentTranscriptSession) -> str:
+    """Stable across export ordering and raw-history/archive source changes."""
+    identity = {key: session.identity.get(key) for key in
+                ("run_id", "candidate_id", "agent_session_id", "task_id", "attempt")}
+    value = json.dumps([session.harness, session.role, session.session_id, identity],
+                       sort_keys=True, ensure_ascii=False)
+    return "session-" + hashlib.sha256(value.encode()).hexdigest()[:24]
+
+
+def transcript_settlement_anchor(session: AgentTranscriptSession, settlement_id: str) -> str:
+    return transcript_anchor(session) + "-settlement-" + hashlib.sha256(settlement_id.encode()).hexdigest()[:16]
 
 
 def _epoch(at: str) -> float | None:
@@ -222,9 +237,10 @@ def _footprint_text_lines(events: list[TranscriptEvent], *, top: int = 4) -> lis
     footprint = _content_footprint(events)
     context, records = footprint["totals"]["context"], footprint["totals"]["records"]
     lines = [
-        f"  footprint: model-context {context['chars']:,} chars / ~{context['tokens']:,} tok"
+        f"  footprint: history-text {context['chars']:,} chars / ~{context['tokens']:,} tok"
         f" ({context['count']} events) · host-records {records['chars']:,} chars /"
-        f" ~{records['tokens']:,} tok (disk only, {records['count']} events)",
+        f" ~{records['tokens']:,} tok ({records['count']} events)",
+        "  Text-volume estimates; not the current model window, cache usage or billed tokens.",
     ]
     for bucket, title in (("context", "top context"), ("records", "top records")):
         for row in footprint[bucket][:top]:
@@ -250,7 +266,8 @@ nav a { color: #1d4ed8; text-decoration: none; background: #e0e7ff; border-radiu
 nav a:hover { text-decoration: underline; }
 .navgroup { color: #475569; background: #e2e8f0; border-radius: 4px; padding: 2px 8px; font-size: 11px; }
 body { overflow-wrap: anywhere; }
-section, .transcript-index { scroll-margin-top: 8rem; }
+section, .transcript-index, .session-anchor, ol.events li[id] { scroll-margin-top: 8rem; }
+.session-anchor { display: block; }
 .transcript-index { padding: 14px 0; border-bottom: 1px solid #cbd5e1; }
 .transcript-index h2 { margin: 0 0 8px; font-size: 14px; }
 .transcript-index a { color: #1d4ed8; }
@@ -463,7 +480,7 @@ def _is_raw_message_stream(event: TranscriptEvent) -> bool:
 
 def _html_event_rows(
     events: list[TranscriptEvent], *, max_chars: int, gap_seconds: float,
-    raw_stream: bool = False,
+    raw_stream: bool = False, anchor_prefix: str = "", sequence_offset: int = 0,
 ) -> str:
     rows: list[str] = []
     markers = _gap_markers(events, gap_seconds)
@@ -485,8 +502,10 @@ def _html_event_rows(
         label = html.escape(event.label)
         if note:
             label += f' <span class="note">{html.escape(note)}</span>'
-        row = (f'<li style="border-left-color:{color}">'
-               f'<span class="seq">{index + 1}</span>'
+        target = event.meta.get("settlement_anchor") or f"{anchor_prefix}-e{index + sequence_offset + 1}"
+        event_anchor = f' id="{html.escape(str(target), quote=True)}"' if anchor_prefix else ""
+        row = (f'<li{event_anchor} style="border-left-color:{color}">'
+               f'<span class="seq">{index + sequence_offset + 1}</span>'
                f'<span class="time">{html.escape(_clock(event.at))}</span>'
                f'<span class="k" style="color:{color}">{html.escape(event.kind)}</span>'
                f' <span class="label">{label}</span>')
@@ -503,6 +522,58 @@ def _html_event_rows(
     return "".join(rows)
 
 
+def _html_report_context(session: AgentTranscriptSession, *, link_prefix: str = "") -> str:
+    context = session.report_context
+    report = link_prefix + context["report_href"] if context.get("report_href") else None
+
+    def link(fragment: str, label: str) -> str:
+        return (f'<a href="{html.escape(report + "#" + fragment, quote=True)}">{html.escape(label)}</a>'
+                if report else html.escape(label))
+
+    parts = ['<div class="report-context">']
+    if report:
+        parts.append('<p>Report: ' + link(context.get("candidate_anchor", ""), "candidate") + " · "
+                     + link(context.get("session_anchor", ""), "worker session") + '</p>')
+    collection = context.get("collection") or {}
+    state = collection.get("state") or ("controller_only" if session.role == "controller-journal" else
+                                        "partial" if session.warnings else "readable_history")
+    parts.append(f'<p>Collection: {html.escape(state)}. '
+                 + html.escape(str(collection.get("reason") or "Persistent history only; actual provider window and permissions are not established.")) + '</p>')
+    binding = context.get("candidate_origin")
+    if context.get("mode"):
+        parts.append('<p>Initial context: ' + html.escape(context["mode"]) + '</p>')
+    if binding:
+        parent = context.get("parent_anchor")
+        source = html.escape(str(binding["parent_native_session_id"]))
+        if parent:
+            parent_page = "../index.html" if link_prefix else ""
+            source = f'<a href="{parent_page}#{html.escape(parent, quote=True)}">{source}</a>'
+        parts.append('<p>Fork source: ' + source + ' → checkpoint '
+                     + html.escape(str(binding["checkpoint_id"])) + ' → ' + html.escape(session.session_id) + '</p>')
+        if context.get("inherited_events") is None:
+            parts.append('<p>Inherited-history boundary: unknown in the available native records.</p>')
+        parts.append('<details><summary>Branch identity, initial contract, workspace, capabilities and budget</summary>'
+                     '<pre>' + html.escape(json.dumps(binding, indent=2, ensure_ascii=False)) + '</pre></details>')
+    if context.get("iterations"):
+        parts.append('<ul>')
+        for item in context["iterations"]:
+            spec = str(item["frozen_spec_id"])
+            run_id = session.identity["run_id"]
+            parts.append('<li>' + link(item["anchor"], f'iteration {item["iteration"]}')
+                         + ' · ' + link(f'contract-{run_id}-{spec}', spec)
+                         + ' · settlement ' + html.escape(str(item.get("settlement_id") or "unknown")))
+            sequences = item.get("event_sequences") or []
+            if sequences:
+                target = item.get("event_anchor") or f'{transcript_anchor(session)}-e{sequences[0]}'
+                parts.append(f' · <a href="#{html.escape(target, quote=True)}">settlement event</a>')
+            else:
+                parts.append(' · exact native event: unknown')
+            parts.append('</li>')
+        parts.append('</ul>')
+    parts.append('</div>')
+    return ''.join(parts)
+
+
 def render_transcript_html(
     sessions: list[AgentTranscriptSession],
     *,
@@ -510,6 +581,7 @@ def render_transcript_html(
     max_chars: int = _HTML_DEFAULT_MAX_CHARS,
     gap_seconds: float = _DEFAULT_GAP_SECONDS,
     title: str = "Goal Plus agent transcript",
+    report_link_prefix: str = "",
 ) -> str:
     """Self-contained static HTML page: navigation, per-session summary and event rows."""
     def anchor(session: AgentTranscriptSession, position: int) -> str:
@@ -568,7 +640,7 @@ def render_transcript_html(
             + "</pre>"))
         for warning in session.warnings:
             rows.append(("warning", html.escape(warning)))
-        parts.append(f'<section id="{anchor(session, position)}"><header>'
+        parts.append(f'<section id="{anchor(session, position)}"><span class="session-anchor" id="{transcript_anchor(session)}"></span><header>'
                      f'<h2>#{position} {html.escape(_display_name(session))} ({html.escape(session.harness)})'
                      f' — {html.escape(session.session_id or "(unknown)")}</h2>'
                      f'<div class="facts">{"".join(fact for fact in facts if fact)}</div></header>')
@@ -577,16 +649,28 @@ def render_transcript_html(
             if value:
                 parts.append(f"<tr><td>{key}</td><td>{value}</td></tr>")
         parts.append("</table>")
+        parts.append(_html_report_context(session, link_prefix=report_link_prefix))
         if session.events:
             event_limit = 0 if session.role in {"verifier", "annotator"} else max_chars
-            parts.append(f'<ol class="events">{_html_event_rows(session.events, max_chars=event_limit, gap_seconds=gap_seconds)}</ol>')
+            inherited = session.report_context.get("inherited_events")
+            if type(inherited) is int and 0 < inherited <= len(session.events):
+                parts.append('<details class="inherited-history"><summary>Inherited persistent history '
+                             f'({inherited} events through the recorded checkpoint)</summary><ol class="events">'
+                             + _html_event_rows(session.events[:inherited], max_chars=event_limit,
+                                                gap_seconds=gap_seconds, anchor_prefix=transcript_anchor(session))
+                             + '</ol></details><h3>Branch continuation</h3>')
+            else:
+                inherited = 0
+            parts.append('<ol class="events">' + _html_event_rows(session.events[inherited:], max_chars=event_limit,
+                gap_seconds=gap_seconds, anchor_prefix=transcript_anchor(session), sequence_offset=inherited) + '</ol>')
             stream_count = sum(_is_raw_message_stream(event) for event in session.events)
             if stream_count:
                 parts.append('<details class="raw-message-stream">'
                              f'<summary>Raw message stream ({stream_count} events)</summary>'
                              '<ol class="events">'
                              + _html_event_rows(session.events, max_chars=event_limit,
-                                                gap_seconds=gap_seconds, raw_stream=True)
+                                                gap_seconds=gap_seconds, raw_stream=True,
+                                                anchor_prefix=transcript_anchor(session))
                              + '</ol></details>')
         parts.append("</section>")
     parts.append("<footer>Usage notes: context/output/total are tokens for that one provider call"

@@ -31,23 +31,26 @@ class ChildDriver:
         attachment = result.get("fs")
         branch_id = attachment.get("fsBranchId") if isinstance(attachment, dict) else None
         if not isinstance(child_id, str) or not child_id.startswith("tt-"):
-            raise RuntimeError("thinkthread.spawn omitted thinkthreadId")
+            raise RuntimeError("ThinkThread derivation omitted thinkthreadId")
         if (
             not isinstance(attachment, dict) or attachment.get("kind") != "private"
             or not isinstance(branch_id, str) or not branch_id.startswith("fsbranch-")
         ):
-            raise RuntimeError("thinkthread.spawn omitted a private branch")
+            raise RuntimeError("ThinkThread derivation omitted a private branch")
         if capability_ids(result.get("capabilities")) != {"thinkthread.message"}:
             raise RuntimeError("ThinkThread Child grant is not Message-only")
         if model is not None and result.get("model") != model:
             raise RuntimeError("ThinkThread candidate model does not match its intent")
         message_id = result.get("initialMessageId")
         if message_id is not None and not isinstance(message_id, str):
-            raise RuntimeError("thinkthread.spawn returned an invalid initialMessageId")
+            raise RuntimeError("ThinkThread derivation returned an invalid initialMessageId")
         return ChildBinding(child_id, branch_id, message_id)
 
     def spawn(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.client.invoke("thinkthread.spawn", params, timeout_seconds=120.0)
+
+    def fork(self, params: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        return self.client.invoke("thinkthread.fork", params, timeout_seconds=timeout)
 
     def wake(self, child_id: str, message: str) -> str:
         result = self.client.invoke("message.send", {

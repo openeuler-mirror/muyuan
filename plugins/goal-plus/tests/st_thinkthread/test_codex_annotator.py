@@ -96,7 +96,10 @@ def test_native_codex_annotator_child_publishes_annotation(thinkthread_root):
     assert tools[0] == "goal_plus_thinkthread_annotation_next"
     assert tools[-1] == "goal_plus_thinkthread_annotation_next"
     assert "goal_plus_thinkthread_annotation_submit" in tools
+    assert "goal_plus_thinkthread_artifact_view_list" in tools
+    assert "goal_plus_thinkthread_artifact_view_diff" in tools
     assert report["view_reads"], report
     annotation = report["annotation"]
     assert annotation["description"].strip()
+    assert all(token in annotation["description"] for token in report["view_consumption"].values())
     assert annotation["supplemental_evaluation"]

@@ -2,6 +2,11 @@
 
 from typing import Literal
 
+from pydantic import ConfigDict
+
+from goal_plus.domain.base import SearchModel
+from goal_plus.domain.search import FrozenSpec
+
 CONTROLLER_ONLY_CLOSEOUT_ENV = "GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT"
 CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES = frozenset(
     {
@@ -25,6 +30,8 @@ SEARCH_TOOL_NAMES = {
     "goal_plus_search_list_history",
     "goal_plus_search_plan_next",
     "goal_plus_search_start_batch",
+    "goal_plus_search_fork",
+    "goal_plus_search_revise_spec",
     "goal_plus_search_get_agent_context",
     "goal_plus_search_get_global_evidence",
     "goal_plus_search_reference_open",
@@ -61,6 +68,7 @@ ToolCallerRole = Literal["main", "candidate", "final_checker", "ordinary"]
 CANDIDATE_TOOL_NAMES = frozenset(
     {
         "goal_plus_search_get_agent_context",
+        "goal_plus_search_revise_spec",
         "goal_plus_search_get_global_evidence",
         "goal_plus_search_reference_open",
         "goal_plus_search_stage_shared_tool",
@@ -111,9 +119,43 @@ SESSION_TOOL_NAMES = {"goal_plus_session_" + action for action in ("run", "wait_
 PUBLIC_TOOL_NAMES = SEARCH_TOOL_NAMES | GOAL_PLUS_TOOL_NAMES | SESSION_TOOL_NAMES | {"goal_plus_monitor_snapshot"}
 
 CANDIDATE_CAPABILITIES = {
+    "goal_plus_search_reference_open": "references",
+    "goal_plus_search_revise_spec": "spec_revision",
     "goal_plus_search_get_evidence_detail": "supplemental",
     "goal_plus_search_stage_shared_tool": "shared_tools",
     "goal_plus_search_copy_shared_tool": "shared_tools",
     "goal_plus_search_read_shared_cache": "shared_cache",
     "goal_plus_search_append_shared_cache": "shared_cache",
 }
+
+
+class CandidateToolCapabilities(SearchModel):
+    """Frozen optional tool visibility shared by local and remote candidates."""
+
+    model_config = ConfigDict(strict=True, frozen=True)
+
+    supplemental: bool
+    shared_tools: bool
+    shared_cache: bool
+    references: bool
+    spec_revision: bool
+
+    @classmethod
+    def from_frozen(cls, frozen: FrozenSpec) -> "CandidateToolCapabilities":
+        return cls(
+            supplemental=frozen.supplemental_evaluation_enabled,
+            shared_tools=frozen.spec.shared_dir.enabled,
+            shared_cache=frozen.spec.shared_cache.enabled,
+            references=frozen.spec.workspace.provider != "thinkthread",
+            spec_revision=(
+                not frozen.spec.strategy.adaptive_search_enabled
+                or frozen.spec.strategy.fork_enabled
+            ),
+        )
+
+    def permits(self, tool_name: str) -> bool:
+        capability = CANDIDATE_CAPABILITIES.get(tool_name)
+        return capability is None or getattr(self, capability)
+
+    def tool_names(self) -> tuple[str, ...]:
+        return tuple(sorted(name for name in CANDIDATE_TOOL_NAMES if self.permits(name)))

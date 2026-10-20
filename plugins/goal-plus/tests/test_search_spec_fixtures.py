@@ -25,5 +25,5 @@ def test_search_spec_fixture_is_loadable(relative_path: str) -> None:
 
     assert not Path(spec.source_path).is_absolute()
     assert (ROOT / spec.source_path).is_dir()
-    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.strategy.initial_context == "fresh"
     assert spec.strategy.worker_budget is not None

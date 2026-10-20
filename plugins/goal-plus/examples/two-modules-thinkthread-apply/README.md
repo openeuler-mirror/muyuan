@@ -9,9 +9,10 @@ verifier、selection、promotion 和 `fs.apply` 回写 Root。这里的两个 mo
 ```bash
 cd /path/to/muyuan/plugins/goal-plus
 ./install.sh --pi --thinkthread --yes
+mkdir -p "$PWD/.tmp"
 python3 examples/two-modules-thinkthread-apply/prepare_workspace.py \
-  --destination /tmp/goal-plus-two-modules
-cd /tmp/goal-plus-two-modules
+  --destination "$PWD/.tmp/goal-plus-two-modules"
+cd "$PWD/.tmp/goal-plus-two-modules"
 python3 verify.py
 ```
 

@@ -16,6 +16,7 @@ from goal_plus.infrastructure.artifacts.source_repository import SourceRepositor
 from goal_plus.infrastructure.artifacts.thinkthread_baseline import thinkthread_source_relative_path
 from goal_plus.infrastructure.search_configuration import SearchConfiguration, supplemental_evaluation_enabled, supplemental_evaluation_required, SUPPLEMENTAL_EVALUATION_ENABLED_ENV, SUPPLEMENTAL_EVALUATION_REQUIRED_ENV
 from goal_plus.infrastructure.state.files import sha256_file
+from goal_plus.infrastructure.host_bindings import execution_binding
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
 from goal_plus.workspaces import IGNORED_NAMES, IGNORED_SUFFIXES, estimate_workspace_capacity, LocalGitWorkspace
 
@@ -238,4 +239,5 @@ class FileFreezeSource:
             task_skill_paths,
             source_artifact_ref,
             self.root_dir / "bootstrap" / f"origin-{uuid.uuid4().hex[:12]}",
+            fork_supported=execution_binding(agent_harness, runtime_provider).capabilities.supports_fork,
         )

@@ -9,6 +9,7 @@ from goal_plus.application.annotation import (
     EVIDENCE_ANNOTATION_RUN_STATES,
 )
 from goal_plus.application.search_context import SearchContext
+from goal_plus.application.candidate_spec import iteration_spec_id
 from goal_plus.domain.annotation import (
     EvidenceAnnotationQueue,
     EvidenceAnnotationTask,
@@ -109,11 +110,12 @@ class AnnotationAdmission:
             )
             if iteration is None or (
                 iteration.agent_session_id is None
-                and frozen.spec.strategy.orchestration_mode != "adaptive_search"
+                and not frozen.spec.strategy.adaptive_search_enabled
             ):
                 raise RuntimeError(
                     "annotation requires settled worker or Adaptive Evidence"
                 )
+            frozen = self.source.read_frozen_spec(iteration_spec_id(run, iteration))
             task = self._create_locked(run_id, frozen, candidate_id, iteration)
             self.repair_queue(self.workflow.queue(run_id))
             return task
@@ -129,7 +131,7 @@ class AnnotationAdmission:
                 for iteration in record.iterations:
                     if (
                         iteration.agent_session_id is None
-                        and frozen.spec.strategy.orchestration_mode != "adaptive_search"
+                        and not frozen.spec.strategy.adaptive_search_enabled
                     ):
                         continue
                     try:
@@ -316,6 +318,8 @@ class AnnotationAdmission:
                 existing.attempt_commit != iteration.git_head
                 or existing.attempt_base_commit != iteration.attempt_base_git_head
                 or existing.settlement_id != iteration.settlement_id
+                or (existing.frozen_spec_id or self.evidence.read_run(run_id).frozen_spec_id) != frozen.frozen_spec_id
+                or (existing.spec_hash is not None and existing.spec_hash != frozen.spec_hash)
                 or existing.attempt_artifact_ref != iteration.artifact_ref
                 or existing.attempt_base_artifact_ref
                 != iteration.attempt_base_artifact_ref
@@ -347,7 +351,8 @@ class AnnotationAdmission:
             profile = None
         context = self.context.task_context(run_id, fallback=frozen.spec.objective)
         comparison_basis = (
-            self.comparison_basis(run_id, target_candidate_id=candidate_id)
+            self.comparison_basis(run_id, target_candidate_id=candidate_id,
+                                  frozen_spec_id=frozen.frozen_spec_id)
             if supplemental_enabled
             else []
         )
@@ -375,6 +380,8 @@ class AnnotationAdmission:
             run_id=run_id,
             candidate_id=candidate_id,
             iteration=iteration.iteration,
+            frozen_spec_id=frozen.frozen_spec_id,
+            spec_hash=frozen.spec_hash,
             attempt_base_commit=iteration.attempt_base_git_head,
             attempt_commit=iteration.git_head,
             attempt_base_artifact_ref=iteration.attempt_base_artifact_ref,
@@ -449,7 +456,7 @@ class AnnotationAdmission:
                     try:
                         self._create_locked(
                             run_id,
-                            frozen,
+                            self.source.read_frozen_spec(iteration_spec_id(run, iteration)),
                             candidate_id,
                             iteration,
                         )
@@ -477,9 +484,10 @@ class AnnotationAdmission:
         run_id: str,
         *,
         target_candidate_id: str,
+        frozen_spec_id: str | None = None,
     ) -> list[EvidenceComparisonReference]:
         run = self.evidence.read_run(run_id)
-        frozen = self.source.read_frozen_spec(run.frozen_spec_id)
+        frozen = self.source.read_frozen_spec(frozen_spec_id or run.frozen_spec_id)
         maximize = frozen.spec.metric_direction == "maximize"
         settled = []
         for record in self.source.read_candidate_evidence(run_id):
@@ -489,6 +497,7 @@ class AnnotationAdmission:
                 iteration
                 for iteration in record.iterations
                 if iteration.agent_session_id is not None
+                and iteration_spec_id(run, iteration) == frozen.frozen_spec_id
                 and artifact_iteration_eligible(iteration)
                 and iteration.disposition in {None, "keep", "retain"}
             ]
