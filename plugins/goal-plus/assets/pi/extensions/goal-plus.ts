@@ -2868,7 +2868,7 @@ export default async function (pi: ExtensionAPI) {
 		});
 	}
 	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
-	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_provider=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [spawn_mode=fresh|fork] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_provider=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		if (role === "main") {

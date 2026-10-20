@@ -383,7 +383,9 @@ def valid_spec_dict() -> dict:
                 "name": "score",
                 "role": "ranking_signal",
                 "command": ["python", "evaluator.py"]}
-        ]}
+        ],
+        "strategy": {"initial_context": "fresh"},
+    }
 
 
 def test_search_spec_parses_nested_models_and_serializes_enums() -> None:
@@ -852,11 +854,11 @@ def test_bootstrap_cannot_ignore_anti_cheat_rejection():
     assert "integrity: CandidateRejected" in report.failure_detail()
 
 
-def test_strategy_spec_defaults_to_fresh_context_and_rejects_removed_modes() -> None:
+def test_strategy_spec_defaults_to_fork_context_and_rejects_removed_modes() -> None:
     default = StrategySpec()
     fork = StrategySpec(initial_context="fork")
 
-    assert default.initial_context == "fresh"
+    assert default.initial_context == "fork"
     assert fork.initial_context == "fork"
 
     with pytest.raises(ValidationError):
@@ -873,6 +875,7 @@ def test_strategy_spec_derives_llm_verifier_requirement() -> None:
         },
     )
     adaptive = StrategySpec(
+        initial_context="fresh",
         verifier={"scores": ["progress_reward", "allocation_utility"]},
         adaptive_search={"allocation": {"policy": "swe_search_uct/v1"}},
     )
@@ -954,7 +957,10 @@ def test_freeze_input_completes_policy_scores_and_defaults(verifier) -> None:
 
     data = valid_spec_dict()
     data["workspace"] = {"provider": "git_worktree"}
-    data["strategy"] = {"adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}}}
+    data["strategy"] = {
+        "initial_context": "fresh",
+        "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
+    }
     if verifier is not None:
         data["strategy"]["verifier"] = verifier
     parsed = SearchSpecInput.model_validate(data)
@@ -974,6 +980,7 @@ def test_freeze_input_completes_policy_scores_and_defaults(verifier) -> None:
     )
     assert FrozenSpec.model_validate_json(frozen.model_dump_json()) == frozen
     explicit = SearchSpecInput.model_validate({**data, "strategy": {
+        "initial_context": "fresh",
         "verifier": runtime.strategy.verifier.model_dump(),
         "adaptive_search": {
             "allocation": runtime.strategy.allocation.model_dump(),
@@ -981,7 +988,7 @@ def test_freeze_input_completes_policy_scores_and_defaults(verifier) -> None:
     }})
     assert explicit.to_runtime_spec().model_dump() == runtime.model_dump()
     # User-owned input dictionaries are not changed by normalization.
-    assert "initial_context" not in data["strategy"]
+    assert data["strategy"]["initial_context"] == "fresh"
     assert "parameters" not in data["strategy"]["adaptive_search"]["allocation"]
 
 
@@ -990,7 +997,10 @@ def test_frozen_spec_parent_requires_revision_reason() -> None:
 
     data = valid_spec_dict()
     data["workspace"] = {"provider": "git_worktree"}
-    data["strategy"] = {"adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}}}
+    data["strategy"] = {
+        "initial_context": "fresh",
+        "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
+    }
     runtime = SearchSpecInput.model_validate(data).to_runtime_spec()
     frozen = FrozenSpec(
         frozen_spec_id="spec_child",
@@ -1009,16 +1019,19 @@ def test_frozen_spec_parent_requires_revision_reason() -> None:
 
 
 def test_policy_parameters_accept_partial_overrides_and_reject_invalid_values() -> None:
-    strategy = StrategySpec(adaptive_search={"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 7}}})
+    strategy = StrategySpec(
+        initial_context="fresh",
+        adaptive_search={"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 7}}},
+    )
     assert strategy.allocation.parameters.max_depth == 7
     assert strategy.allocation.parameters.exploration_weight == 0.01
     with pytest.raises(ValidationError):
-        StrategySpec(adaptive_search={"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}}})
+        StrategySpec(initial_context="fresh", adaptive_search={"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}}})
     with pytest.raises(ValidationError):
-        StrategySpec(adaptive_search={"allocation": {"policy": "unknown/v1"}})
+        StrategySpec(initial_context="fresh", adaptive_search={"allocation": {"policy": "unknown/v1"}})
     for scores in (["unknown"], ["progress_reward", "progress_reward"]):
         with pytest.raises(ValidationError):
-            StrategySpec(adaptive_search={"allocation": {"policy": "swe_search_uct/v1"}}, verifier={"scores": scores})
+            StrategySpec(initial_context="fresh", adaptive_search={"allocation": {"policy": "swe_search_uct/v1"}}, verifier={"scores": scores})
 
 
 @pytest.mark.parametrize("with_allocation", [False, True])
@@ -1028,7 +1041,10 @@ def test_minimal_steering_configuration_enables_verifier(with_allocation) -> Non
 
     data = valid_spec_dict()
     data["workspace"] = {"provider": "git_worktree"}
-    data["strategy"] = {"adaptive_search": {"steering": {"policy": "search_diagnostic_guidance/v1"}}}
+    data["strategy"] = {
+        "initial_context": "fresh",
+        "adaptive_search": {"steering": {"policy": "search_diagnostic_guidance/v1"}},
+    }
     if with_allocation:
         data["strategy"]["adaptive_search"]["allocation"] = {"policy": "swe_search_uct/v1"}
     runtime = SearchSpecInput.model_validate(data).to_runtime_spec()
@@ -1055,6 +1071,7 @@ def test_freeze_input_preserves_adaptive_policies_and_public_evidence_mode() -> 
     data = valid_spec_dict()
     data["workspace"] = {"provider": "git_worktree"}
     data["strategy"] = {
+        "initial_context": "fresh",
         "adaptive_search": {
             "allocation": {"policy": "swe_search_uct/v1"},
             "steering": steering.model_dump(mode="json"),

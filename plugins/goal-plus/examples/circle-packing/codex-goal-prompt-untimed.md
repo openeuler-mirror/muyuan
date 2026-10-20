@@ -1,4 +1,4 @@
-$goal-plus max_parallel=2 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
+$goal-plus spawn_mode=fresh max_parallel=2 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
 问题：当前程序需要在单位正方形内放置恰好 26 个互不重叠的圆，并尽可能增大

@@ -391,7 +391,7 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
 
     record = runtime.start_from_host_command(
-        "max_parallel=2 max_duration_seconds=300 workspace_provider=git_worktree "
+        "spawn_mode=fork max_parallel=2 max_duration_seconds=300 workspace_provider=git_worktree "
         "promotion_mode=artifact_only strategy=agent_guided inner_agent=common "
         "Optimize latency",
         invocation=_codex_invocation("codex:test:config"),
@@ -400,6 +400,7 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     assert record.raw_goal.startswith("Optimize latency")
     assert "max_parallel=" not in record.raw_goal
     assert record.command_config.model_dump(exclude_none=True) == {
+        "spawn_mode": "fork",
         "max_parallel": 2,
         "max_duration_seconds": 300,
         "workspace_provider": "git_worktree",
@@ -628,6 +629,7 @@ def test_set_status_rejects_unknown_value_without_mutating_goal(tmp_path) -> Non
         "max_parallel=zero Optimize latency",
         "max_duration_seconds=zero Optimize latency",
         "max_duration_seconds=0 Optimize latency",
+        "spawn_mode=unknown Optimize latency",
         "workers=A*1,B Optimize latency",
     ],
 )

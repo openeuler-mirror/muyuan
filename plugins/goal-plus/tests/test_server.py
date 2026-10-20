@@ -727,7 +727,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert set(worker_defaults["properties"]) == {"model", "reasoning_effort", "service_tier"}
     assert "evidence_annotator" in strategy["properties"]
     initial_context = strategy["properties"]["initial_context"]
-    assert initial_context["default"] == "fresh"
+    assert initial_context["default"] == "fork"
     assert set(initial_context["enum"]) == {"fresh", "fork"}
     assert "verifier" in strategy["properties"]
     selection = strategy["properties"]["selection"]["properties"]

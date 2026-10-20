@@ -42,6 +42,7 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
 
         assert objective
         assert config.inner_agent == expected_inner_agent
+        assert config.spawn_mode == "fresh"
         assert config.workspace_provider == "git_worktree"
         assert config.promotion_mode == "apply"
         assert '`source_path="workspace"' in body

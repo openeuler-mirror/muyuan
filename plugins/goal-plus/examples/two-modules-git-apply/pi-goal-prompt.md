@@ -1,4 +1,4 @@
-/goal-plus mode=probe max_parallel=1 max_duration_seconds=600 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common 完成双 module Git Search E2E。
+/goal-plus spawn_mode=fresh mode=probe max_parallel=1 max_duration_seconds=600 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common 完成双 module Git Search E2E。
 
 目标：必须同时修改 `modules/module_a.py` 和 `modules/module_b.py`，让它们分别定义
 `VALUE = 7` 与 `VALUE = 11`。只有两个模块都改对，`python verify.py` 才会返回

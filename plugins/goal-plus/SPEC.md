@@ -376,7 +376,11 @@ edit surface、预算、模型、能力及冻结 verifier 字节。每次 attemp
 不重建，另一分支不切换；不同版本的分数不得直接比较。详见
 [分支评价版本](docs/shared-plane.md#分支评价版本)。
 
-`strategy.initial_context=fork` 是 provider-neutral 的 Search 初始上下文来源，默认关闭。
+`strategy.initial_context=fork` 是 provider-neutral 的 Search 初始上下文来源，SearchSpec 默认使用
+该模式；需要从冻结 baseline 创建初始 candidate 时必须显式选择 `fresh`。
+用户可以在 `/goal-plus` 或 `$goal-plus` 命令中通过
+`spawn_mode=fresh|fork` 显式约束该字段；Goal runtime 将其作为 command config 持久化，
+并在 freeze 时拒绝与 FrozenSpec 不一致的选择。
 Main 在 frozen spec、preflight 和共同完成边界之后，由对应 host adapter 创建独立 native 分支；
 每个分支保存不可变 fork binding（checkpoint provenance、branch identity、workspace 或 Fs
 attachment、预算与工具能力）。当前已实现 direct Codex/Pi adapter，ThinkThread adapter 也已

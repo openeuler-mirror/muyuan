@@ -3372,7 +3372,7 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
         runtime.plan_next(run_id, requested_k=4)
 
 
-def test_default_fresh_context_remains_llm_verifier_independent(
+def test_explicit_fresh_context_remains_llm_verifier_independent(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)

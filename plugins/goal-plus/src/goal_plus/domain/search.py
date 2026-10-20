@@ -206,7 +206,7 @@ class StrategyOptions(SearchModel):
         description="agent_guided (aliases agent/default) requires proposals; random (alias random_mode) does not. Not a custom label.",
     )
     initial_context: Literal["fresh", "fork"] = Field(
-        default="fresh",
+        default="fork",
         description=(
             "The source of the first candidate context. fresh starts isolated candidates from the frozen source; "
             "fork derives isolated branches from Main's completed checkpoint. The selected host "

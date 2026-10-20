@@ -51,6 +51,8 @@ strategy:
 将结果写入 FrozenSpec 并参与 spec hash：
 
 - `strategy.adaptive_search` 至少配置 allocation 或 steering；省略该对象表示固定并行。
+- Adaptive Search 必须显式使用 `initial_context: fresh`（或命令配置 `spawn_mode=fresh`），因为
+  `initial_context: fork` 与 `adaptive_search` 当前互斥。
 - `initial_context: fork` 与 `adaptive_search` 当前拒绝，因为 fork successor dispatch 尚未接线。
 - verifier 缺省、scores 为空或不完整时，合并已启用 Allocation/Steering 的 required_score_keys，
   保留用户额外选择的 key。未知 key 和重复配置仍拒绝。

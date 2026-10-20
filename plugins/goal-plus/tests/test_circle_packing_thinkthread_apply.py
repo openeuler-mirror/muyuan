@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from goal_plus.domain.search_input import SearchSpecInput
+from goal_plus.domain.goal_commands import parse_goal_plus_command_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,7 +126,7 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
     first_line = prompt.splitlines()[0]
 
     assert first_line.startswith(
-        "/goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 "
+        "/goal-plus spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=1200 "
         "workspace_provider=thinkthread promotion_mode=apply "
         "strategy=agent_guided inner_agent=autoresearch "
     )
@@ -143,13 +144,22 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
         assert internal_detail not in prompt
 
 
+def test_circle_packing_thinkthread_fork_prompt_declares_spawn_mode() -> None:
+    prompt = EXAMPLE.joinpath("pi-goal-prompt-fork.md").read_text(encoding="utf-8")
+    first_line = prompt.splitlines()[0]
+    objective, config = parse_goal_plus_command_config(first_line.split(" ", 1)[1])
+
+    assert objective
+    assert config.spawn_mode == "fork"
+
+
 def test_circle_packing_thinkthread_variant_prompts_bind_expected_modes() -> None:
     llm = EXAMPLE.joinpath("pi-goal-prompt-llm-verifier.md").read_text(encoding="utf-8")
     adaptive = EXAMPLE.joinpath("pi-goal-prompt-adaptive-search.md").read_text(encoding="utf-8")
 
     for prompt in (llm, adaptive):
         assert prompt.startswith(
-            "/goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 "
+            "/goal-plus spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=1200 "
             "workspace_provider=thinkthread promotion_mode=apply "
             "strategy=agent_guided inner_agent=autoresearch "
         )
@@ -173,7 +183,7 @@ def test_circle_packing_thinkthread_codex_prompt_uses_host_entrypoint() -> None:
     assert "`goal_plus_host_start`" in prompt
     assert "$goal-plus" not in prompt
     assert (
-        "mode=probe max_parallel=2 max_duration_seconds=1200 "
+        "spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=1200 "
         "workspace_provider=thinkthread promotion_mode=apply "
         "strategy=agent_guided inner_agent=common "
     ) in prompt

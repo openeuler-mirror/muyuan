@@ -311,7 +311,9 @@ Search promotion 后，Pi 用 `goal_plus_record_search_result` 登记“搜索�
 
 ## Search Session 流程
 
-Pi Search 默认使用 `initial_context="fresh"` 和固定的初始 lane：
+Pi Search 在未指定命令约束时使用 `initial_context="fork"`；完成 Main 准备回合后从
+checkpoint 派生初始 lane。需要直接从 baseline 启动 candidate 时显式使用
+`spawn_mode=fresh`；命令可用 `spawn_mode=fresh|fork` 约束 SearchSpec 的初始派发方式：
 
 1. 只规划并物化一次初始 candidate；
 2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；

@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 max_duration_seconds=600 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化 `workspace/initial_program.py` 的 Circle Packing 解。
+/goal-plus spawn_mode=fresh max_parallel=2 max_duration_seconds=600 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化 `workspace/initial_program.py` 的 Circle Packing 解。
 
 GOAL_PLUS_DEBUG=1
 
