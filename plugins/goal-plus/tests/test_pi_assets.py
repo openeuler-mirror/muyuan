@@ -85,32 +85,32 @@ def test_pi_thinkthread_worker_activates_context_from_logical_root() -> None:
     assert "workspaceAccess.logical_root" in activation
 
 
-def test_pi_worker_registers_shared_cache_tools_only_with_the_spec() -> None:
+def test_pi_worker_registers_shared_knowledge_tools_only_with_the_spec() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
     activation = text.split("function activateWorkerContext(", 1)[1].split(
         "function commandContextFrom(", 1
     )[0]
 
-    # Spec signal: the host context carries the shared cache snapshot only when
-    # the frozen spec enables it; a persisted resume entry carries the flag.
-    assert "isRecord(details.shared_cache)" in activation
-    assert "details.shared_cache_enabled === true" in activation
-    assert "shared_cache_enabled: true" in activation
+    # Spec signal: the host context carries the shared knowledge snapshot only
+    # when the frozen spec enables it; a persisted resume entry carries the flag.
+    assert "isRecord(details.shared_knowledge)" in activation
+    assert "details.shared_knowledge_enabled === true" in activation
+    assert "shared_knowledge_enabled: true" in activation
     # Registration happens through the shared constant, guarded by the flag.
-    assert "workerSharedCacheEnabled = true" in activation
-    assert "for (const tool of SHARED_CACHE_TOOL_NAMES)" in activation
+    assert "workerSharedKnowledgeEnabled = true" in activation
+    assert "for (const tool of SHARED_KNOWLEDGE_TOOL_NAMES)" in activation
     assert "registerRuntimeTool(pi, tool, registered)" in activation
     # ThinkThread transport must serialize the same two tools.
     serial = text.split("async function runThinkThreadWorkerToolSerial(", 1)[1].split(
         "async function", 1
     )[0]
-    assert '"goal_plus_search_read_shared_cache"' in serial
-    assert '"goal_plus_search_append_shared_cache"' in serial
+    assert '"goal_plus_search_read_shared_knowledge"' in serial
+    assert '"goal_plus_search_append_shared_knowledge"' in serial
     # Per-turn ThinkThread activation keeps them hidden until the context says so.
     scoping = text.split("function scopeThinkThreadWorkerTools(", 1)[1].split(
         "async function", 1
     )[0]
-    assert "SHARED_CACHE_TOOL_NAMES" in scoping
+    assert "SHARED_KNOWLEDGE_TOOL_NAMES" in scoping
 
 
 def test_pi_thinkthread_worker_delegates_generation_fencing_to_root() -> None:

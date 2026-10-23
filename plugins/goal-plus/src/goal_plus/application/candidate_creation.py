@@ -223,16 +223,17 @@ class CandidateCreation:
                     "shared_dir 采用方规则：通过 Global Evidence 的 Tool View 发现工具；Tool View 不代表推荐或源码行为。可能相关时用 goal_plus_search_copy_shared_tool 和准确的 tool_id、snapshot_hash 复制快照，检查 manifest 和源码后自主决定是否采用；receipt 只表示复制，不表示采用，也不改变 verifier 结算或硬分。",
                 ]
             )
-        if frozen.spec.shared_cache.enabled:
-            cache_sections = "；".join(
+        if frozen.spec.shared_knowledge.enabled:
+            knowledge_sections = "；".join(
                 f"{section.key}（{section.title}：{section.requirement}）"
-                for section in frozen.spec.shared_cache.sections
+                for section in frozen.spec.shared_knowledge.sections
             )
             instructions.extend(
                 [
-                    f"shared_cache 已启用。操作者冻结了以下客观信息模板：{cache_sections}。用 goal_plus_search_read_shared_cache 随时查阅，用 goal_plus_search_append_shared_cache 追加或（以 supersedes）修正。",
-                    "shared_cache 记录完全自愿，不影响 verifier 评分、selection 或 promotion；它唯一的用途是让你自己和同 run 的后续 worker 少走弯路。不要为写而写：当你得到对完成本任务有用、且用一句客观陈述就能说清的事实（环境行为、踩过的坑、可复用的参数/命令、一个被证伪的假设）时，顺手记一条，同轮其余时间照常工作。",
-                    "探索新方向前先读一次 cache：你准备做的第一步若已有记录，直接从记录继续而不是从零重试。verifier 返回后附带最新 cache 快照，留意其中与你当前方向相关的条目。",
+                    f"shared_knowledge 已启用。操作者冻结了以下知识模板：{knowledge_sections}。用 goal_plus_search_read_shared_knowledge 随时查阅，用 goal_plus_search_append_shared_knowledge 追加或（以 supersedes）修正。",
+                    "每条条目由结构化字段组成：entry_type 限 fact|think|subject|question；subject 是语义主键（格式由冻结模板定义）；content 是字典，键名由该 section 冻结模板的 content_keys 定义（不要发明新键名）。fact 无需手填 evidence_ref（runtime 自动锚定）；think 不得被当作事实引用。发现某事实的方法写进 content 的值文本（如 basis 的值含'用 xx 命令核验'），不单列工具来源键。",
+                    "shared_knowledge 记录完全自愿，不影响 verifier 评分、selection 或 promotion；它唯一的用途是让你自己和同 run 的后续 worker 少走弯路。不要为写而写：当你得到对完成本任务有用、且用一句客观陈述就能说清的事实（环境行为、踩过的坑、可复用的参数/命令、一个被证伪的假设）时，顺手记一条，同轮其余时间照常工作。每次调查结束必须二选一：追加事实（含否定性事实）或更新 question 记录，不允许让'查过'只留在你自己的叙述里。",
+                    "探索新方向前先读一次知识板：你准备做的第一步若已有记录，直接从记录继续而不是从零重试。verifier 返回后附带最新知识板快照，留意其中与你当前方向相关的条目；同主键出现矛盾时用 type=question 记录矛盾，不要互相 supersedes。",
                 ]
             )
         instructions.extend(proposal.instructions)

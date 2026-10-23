@@ -45,7 +45,7 @@ def test_codex_candidate_mcp_routes_children_by_dispatch_role(monkeypatch):
     monkeypatch.setattr(tools, "_annotator_mcp", lambda transport, session: calls.append(("annotator", session)))
     monkeypatch.setattr(tools, "_verifier_mcp", lambda transport, session: calls.append(("verifier", session)))
     monkeypatch.setattr(tools, "_child_mcp", lambda transport, session, capabilities: calls.append(("candidate", session)))
-    capabilities = CandidateToolCapabilities(supplemental=False, shared_tools=False, shared_cache=False, references=False, spec_revision=False)
+    capabilities = CandidateToolCapabilities(supplemental=False, shared_tools=False, shared_knowledge=False, references=False, spec_revision=False)
     for role in (None, "candidate"):
         monkeypatch.setattr(tools, "_child_binding", lambda transport, role=role: ("agent-1", role, capabilities))
         tools.create_thinkthread_candidate_mcp()
@@ -63,9 +63,9 @@ def test_codex_candidate_mcp_routes_children_by_dispatch_role(monkeypatch):
 
 @pytest.mark.parametrize("capabilities", [
     None,
-    {"supplemental": False, "shared_tools": False, "shared_cache": False},
-    {"supplemental": "false", "shared_tools": False, "shared_cache": False, "references": False, "spec_revision": False},
-    {"supplemental": False, "shared_tools": False, "shared_cache": False, "references": False, "spec_revision": False, "extra": True},
+    {"supplemental": False, "shared_tools": False, "shared_knowledge": False},
+    {"supplemental": "false", "shared_tools": False, "shared_knowledge": False, "references": False, "spec_revision": False},
+    {"supplemental": False, "shared_tools": False, "shared_knowledge": False, "references": False, "spec_revision": False, "extra": True},
 ])
 def test_codex_candidate_binding_requires_complete_typed_capabilities(monkeypatch, capabilities):
     from goal_plus.infrastructure import thinkthread_codex_tools as tools
@@ -362,7 +362,7 @@ def test_remote_candidate_mcp_uses_shared_schema_and_rejects_peer_before_transpo
     remote = create_mcp(tmp_path / "absent", caller_role="candidate", caller_agent_session_id="agent-1",
                         candidate_tool_call=call,
                         candidate_capabilities=CandidateToolCapabilities(
-                            supplemental=True, shared_tools=True, shared_cache=True, references=True, spec_revision=True,
+                            supplemental=True, shared_tools=True, shared_knowledge=True, references=True, spec_revision=True,
                         ))
 
     async def scenario():
@@ -480,11 +480,11 @@ goal_plus_candidate_capabilities=CAPABILITIES;`}],
 
 
 @pytest.mark.parametrize("capabilities,optional_tools", [
-    ({"supplemental": False, "shared_tools": False, "shared_cache": False, "references": False, "spec_revision": False}, set()),
-    ({"supplemental": True, "shared_tools": False, "shared_cache": False, "references": False, "spec_revision": False},
+    ({"supplemental": False, "shared_tools": False, "shared_knowledge": False, "references": False, "spec_revision": False}, set()),
+    ({"supplemental": True, "shared_tools": False, "shared_knowledge": False, "references": False, "spec_revision": False},
      {"goal_plus_search_get_evidence_detail"}),
-    ({"supplemental": False, "shared_tools": False, "shared_cache": True, "references": False, "spec_revision": False},
-     {"goal_plus_search_read_shared_cache", "goal_plus_search_append_shared_cache"}),
+    ({"supplemental": False, "shared_tools": False, "shared_knowledge": True, "references": False, "spec_revision": False},
+     {"goal_plus_search_read_shared_knowledge", "goal_plus_search_append_shared_knowledge"}),
 ])
 def test_codex_child_catalog_projects_parent_frozen_capabilities(codex_candidate_server, capabilities, optional_tools):
     server = codex_candidate_server(capabilities)
@@ -506,7 +506,7 @@ def test_codex_child_catalog_projects_parent_frozen_capabilities(codex_candidate
 
 
 def test_codex_mcp_forwards_over_the_actual_node_message_bridge(codex_candidate_server):
-    server = codex_candidate_server({"supplemental": False, "shared_tools": False, "shared_cache": False, "references": False, "spec_revision": False})
+    server = codex_candidate_server({"supplemental": False, "shared_tools": False, "shared_knowledge": False, "references": False, "spec_revision": False})
 
     async def scenario():
         async with Client(server) as client:

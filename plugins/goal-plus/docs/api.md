@@ -540,6 +540,28 @@ Annotation 的 Artifact View 不授予 candidate Reference 能力。TT Shared To
 | `goal_plus_search_get_global_evidence` | candidate worker | 读取已结算的 Global Evidence |
 | `goal_plus_search_get_evidence_detail` | candidate worker | 按需展开一条 available supplemental evaluation |
 | `goal_plus_search_reference_open` | candidate worker | 打开 Evidence 的精确 reference 目录 |
+| `goal_plus_search_read_shared_knowledge` | candidate worker | 读取共享知识板（冻结模板 + 追加式条目投影） |
+| `goal_plus_search_append_shared_knowledge` | candidate worker | 按统一 content 格式追加/修正知识条目 |
+
+### Shared Knowledge Board
+
+冻结 spec 显式启用 `shared_knowledge` 时，所有 writer（candidate、verifier、
+runtime 投影）共享一个 append-only 事实日志，运行期在
+`runs/<run_id>/shared-knowledge.html` 幂等重生成确定性 HTML 看板（按 subject
+聚合，附 outcome 关联与矛盾高亮）；该文件与读取工具同源，均为日志投影，
+不是第二份可写账本。`global_evidence_mode=independent` 时读侧只返回本
+candidate 自己写入的条目。
+
+每条 content 必须是统一格式：`type=fact|think|subject|question` 在首位，
+`subject` 在第二位，其后按该 section 冻结的键序填值。`type=fact` 必须附
+`evidence_ref=cXXX:iter`（锚定已结算 iteration，否定性事实同样使用 fact）；
+`type=think` 不得附 evidence_ref，且不能被当作事实引用；`type=question`
+记录未解决问题与矛盾。相同内容重复写入按 `(section, content_hash)` 幂等去重；
+同 subject 出现矛盾时响应携带 `contradiction_with`，应记 `type=question` 而
+不是互相 `supersedes`。方法来源（用某命令/工具发现某事实）写进值文本，
+不设专门键。控制面可在 freeze 时用 `GOAL_PLUS_CONTROLLER_SHARED_KNOWLEDGE`
+注入完整模板（旧名 `GOAL_PLUS_CONTROLLER_SHARED_CACHE` 仍作为兼容别名读取），
+未注入时保留 agent 在 Spec Discovery 中提供的模板。
 
 每个 verifier-backed iteration 都会把 commit、score、disposition 和可用时异步生成的 View
 投影到 Global Evidence。`view=null` 表示 annotation 尚未发布；worker 应继续独立工作，不等待或轮询。

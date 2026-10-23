@@ -174,7 +174,7 @@ def test_remote_capabilities_cannot_override_local_frozen_visibility(tmp_path, m
         raise AssertionError("invalid capability binding opened domain state")
 
     monkeypatch.setattr(server_module, "FileSearchRuntime", forbidden)
-    capabilities = CandidateToolCapabilities(supplemental=True, shared_tools=True, shared_cache=True, references=True, spec_revision=True)
+    capabilities = CandidateToolCapabilities(supplemental=True, shared_tools=True, shared_knowledge=True, references=True, spec_revision=True)
     with pytest.raises(ValueError, match="only by a trusted remote transport"):
         create_mcp(
             tmp_path / ".gp", caller_role="candidate", caller_agent_session_id="agent-1",
@@ -391,8 +391,8 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "goal_plus_search_copy_shared_tool",
         "goal_plus_search_get_evidence_detail",
         "goal_plus_search_get_agent_observability",
-        "goal_plus_search_read_shared_cache",
-        "goal_plus_search_append_shared_cache",
+        "goal_plus_search_read_shared_knowledge",
+        "goal_plus_search_append_shared_knowledge",
         "goal_plus_search_run_verifier",
         "goal_plus_search_list_iterations",
         "goal_plus_search_list_allocation_decisions",
@@ -598,11 +598,11 @@ def test_candidate_verifier_schema_matches_frozen_shared_tools_capability(tmp_pa
         return {"accepted": True}
 
     disabled = CandidateToolCapabilities(
-        supplemental=False, shared_tools=False, shared_cache=False,
+        supplemental=False, shared_tools=False, shared_knowledge=False,
         references=False, spec_revision=False,
     )
     enabled = CandidateToolCapabilities(
-        supplemental=False, shared_tools=True, shared_cache=False,
+        supplemental=False, shared_tools=True, shared_knowledge=False,
         references=False, spec_revision=False,
     )
 

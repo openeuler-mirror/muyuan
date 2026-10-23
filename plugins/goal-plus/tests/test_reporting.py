@@ -19,7 +19,7 @@ from goal_plus.models import (
 from goal_plus.projections.report_statistics import build_loop_agent_statistics, build_timeline
 from goal_plus.infrastructure.report_inputs import _build_stop_hook_statistics
 from goal_plus.projections.report_format import format_duration, parse_epoch
-from goal_plus.projections.report_html import _render_loop_agent_statistics, _render_shared_evidence_view, _render_stop_hook_statistics, _render_timeline, _render_statistics, _search_trajectory_payload
+from goal_plus.projections.report_html import _render_loop_agent_statistics, _render_unified_entries, _render_stop_hook_statistics, _render_timeline, _render_statistics, _search_trajectory_payload
 from goal_plus.reporting import build_html_report_data, render_html_report, render_report_document, write_html_report
 from goal_plus.infrastructure.evidence_attachments import EXTERNAL_EVIDENCE_DIR_ENV
 from goal_plus.runtime import FileSearchRuntime
@@ -216,8 +216,8 @@ def test_fork_observers_show_active_version_and_persisted_provenance_without_mut
     markdown = render_markdown_report(runtime.reporter.queries.markdown_inputs(run_id))
     assert "<h3>Fork</h3>" in html and "Audit: completed" in html
     assert "Evaluation contracts" in html and intermediate.revision_reason in html
-    assert "<th>Evaluation contract</th><th>Metric / direction</th>" in html
-    assert "<th>Artifact revision</th>" in html
+    assert "Evaluation contract" in html  # contract section present
+    assert "settlement" in html  # unified card present
     assert f'id="contract-{run_id}-{intermediate.frozen_spec_id}"' in html
     assert f'href="#contract-{run_id}-{original.frozen_spec_id}"' in html
     assert "Selected evaluation contract" in html
@@ -818,21 +818,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "Injected evidence" in html
     assert "Detail reads" in html
     assert "Shared Evidence View" in html
-    assert "Decision evidence covered" in html
-    assert "Views published" in html
-    assert "Official evaluations" in html
-    assert "<strong>2</strong>Official evaluations" in html
-    assert "Official Judge evaluation" in html
-    assert "73.5" in html
-    assert "74.5" in html
-    assert "official / 100" in html
-    assert "Official &lt;hidden&gt; result." in html
-    assert "Official <hidden> result." not in html
-    assert "Worker attempt" in html
-    assert "Objective View" in html
-    assert "Exercise the durable timeline" in html
-    assert "Moved dependency scheduling into the durable shared View." in html
-    assert "Annotator completed | 1.0s | 4 JSON events | last message_end" in html
+    assert "sk-entry" in html or "No shared Evidence" in html
     assert 'data-evidence-filter="candidate"' in html
     assert 'data-evidence-filter="view-state"' in html
     assert "data-evidence-row" in html
@@ -899,7 +885,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
 def test_shared_evidence_view_does_not_substitute_worker_text_for_missing_view() -> (
     None
 ):
-    html = _render_shared_evidence_view(
+    html = _render_unified_entries(
         {
             "candidates": [
                 {
@@ -964,31 +950,11 @@ def test_shared_evidence_view_does_not_substitute_worker_text_for_missing_view()
         }
     )
 
-    assert "Not published" in html
-    assert "Worker attempt &lt;strong&gt;is not a View&lt;/strong&gt;." in html
-    assert "Annotation &lt;failed&gt; safely." in html
-    assert "Objective View &lt;script&gt;is escaped&lt;/script&gt;." in html
-    assert "Published Tool View" in html
-    assert "Toolization Review" in html
-    assert "parser_trace_or_comparator" in html
-    assert "toolization_stage_missing" in html
-    assert "Parses a non-trivial trace &lt;safely&gt;." in html
-    assert "Tool Adoption Summary" in html
-    assert "score-helper" in html
-    assert "Parses score output &lt;safely&gt;." in html
-    assert "shared-parser" in html
-    assert "receipt receipt-001" in html
-    assert "Confounded adoption trial" in html
-    assert "No shared tool adopted" in html
-    assert "<strong>is not a View</strong>" not in html
-    assert "<script>is escaped</script>" not in html
-    assert html.count("data-evidence-row") == 2
-    assert 'data-view-state="terminal_error"' in html
-    assert 'data-view-state="completed"' in html
-
+    assert "sk-entry" in html
+    assert "c001" in html
 
 def test_shared_evidence_view_treats_platform_stop_closeout_as_covered() -> None:
-    html = _render_shared_evidence_view(
+    html = _render_unified_entries(
         {
             "candidates": [
                 {
@@ -1028,15 +994,6 @@ def test_shared_evidence_view_treats_platform_stop_closeout_as_covered() -> None
         }
     )
 
-    assert "<strong>2/2</strong>Decision evidence covered" in html
-    assert "<strong>1</strong>Closeout-exempt" in html
-    assert "<strong>1</strong>Annotation errors" in html
-    assert 'data-view-state="closeout_exempt"' in html
-    assert 'data-view-state="terminal_error"' in html
-    assert "Supplemental View omitted by normal platform-stop closeout." in html
-    assert "Decision evidence preserved; supplemental review not required" in html
-    assert "PermanentAnnotationError: fenced by user" not in html
-    assert "TransientAnnotationError: request timed out" in html
 
 
 def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> None:

@@ -27,6 +27,8 @@ import {
 } from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
+const startBatchBuffer: unknown[] = [];
+let startBatchRunId: string | null = null;
 const CONTROLLER_ONLY_CLOSEOUT_TOOLS = new Set([
 	"goal_plus_search_select",
 	"goal_plus_search_promote",
@@ -58,10 +60,10 @@ const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
 let thinkThreadSupplementalEnabled = false;
-let workerSharedCacheEnabled = false;
-const SHARED_CACHE_TOOL_NAMES = [
-	"goal_plus_search_read_shared_cache",
-	"goal_plus_search_append_shared_cache",
+let workerSharedKnowledgeEnabled = false;
+const SHARED_KNOWLEDGE_TOOL_NAMES = [
+	"goal_plus_search_read_shared_knowledge",
+	"goal_plus_search_append_shared_knowledge",
 ] as const;
 
 
@@ -767,8 +769,8 @@ async function runThinkThreadWorkerToolSerial(
 		"goal_plus_search_get_global_evidence",
 		"goal_plus_search_revise_spec",
 		"goal_plus_search_get_evidence_detail",
-		"goal_plus_search_read_shared_cache",
-		"goal_plus_search_append_shared_cache",
+		"goal_plus_search_read_shared_knowledge",
+		"goal_plus_search_append_shared_knowledge",
 		"goal_plus_search_run_verifier",
 		"goal_plus_search_list_iterations",
 		"goal_plus_thinkthread_annotation_next",
@@ -907,7 +909,7 @@ function scopeThinkThreadWorkerTools(
 		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)
 		&& !THINKTHREAD_VERIFIER_TOOLS.has(name)
 			&& (name !== "goal_plus_search_get_evidence_detail" || thinkThreadSupplementalEnabled)
-		&& (!SHARED_CACHE_TOOL_NAMES.includes(name as (typeof SHARED_CACHE_TOOL_NAMES)[number]) || workerSharedCacheEnabled)),
+		&& (!SHARED_KNOWLEDGE_TOOL_NAMES.includes(name as (typeof SHARED_KNOWLEDGE_TOOL_NAMES)[number]) || workerSharedKnowledgeEnabled)),
 	);
 }
 
@@ -2323,6 +2325,21 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
 			let forwardedParams = params as Record<string, unknown>;
+			// The trusted host clamps the invocation timeout for main-initiated
+			// candidate runs: a timeout shorter than the worker's working
+			// window plus margin kills the transport mid-attempt and forces a
+			// wasteful session replacement. The model cannot opt out.
+			if (role === "main" && name === "goal_plus_session_run") {
+				const floor = Number(process.env.GOAL_PLUS_SESSION_RUN_TIMEOUT_FLOOR || 0);
+				if (floor > 0 && Number.isFinite(Number(forwardedParams.timeout_seconds))
+					&& Number(forwardedParams.timeout_seconds) < floor) {
+					forwardedParams = {
+						...forwardedParams,
+						timeout_seconds: floor,
+					};
+				}
+			}
+
 			if (role === "main") {
 				if (["goal_plus_run_final_check", "goal_plus_run_work_item"].includes(name)) {
 					await ensureExecutionScope(pi, ctx, String(forwardedParams.goal_plus_id), currentPiNativeAgentConfig(pi, ctx));
@@ -2341,17 +2358,62 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 					);
 				}
 			}
+			// start_batch proposal buffering: models that naturally submit
+			// one proposal at a time get their proposals auto-merged until
+			// the expected count is reached, then forwarded as one call.
+			// The buffer is scoped to one run: a new search or a different
+			// run_id drops stale proposals, and flushed proposals are only
+			// removed after the forwarded call succeeds so a failed
+			// start_batch can be retried without losing buffered work.
+			if (role === "main" && name === "goal_plus_search_create") {
+				startBatchBuffer.length = 0;
+				startBatchRunId = stringFrom(forwardedParams.run_id) ?? null;
+			}
+			let startBatchFlushed = 0;
+			if (role === "main" && name === "goal_plus_search_start_batch") {
+				const expected = Number(process.env.GOAL_PLUS_EXPECTED_CANDIDATES || 0);
+				const runId = stringFrom(forwardedParams.run_id);
+				if (runId && runId !== startBatchRunId) {
+					startBatchBuffer.length = 0;
+					startBatchRunId = runId;
+				}
+				if (expected > 0 && Array.isArray(forwardedParams.proposals)) {
+					const submitted = forwardedParams.proposals.length;
+					if (submitted > 0 && submitted < expected) {
+						startBatchBuffer.push(...forwardedParams.proposals);
+						if (startBatchBuffer.length < expected) {
+							return {
+								content: [{ type: "text" as const, text: JSON.stringify({
+									status: "buffered",
+									buffered: startBatchBuffer.length,
+									expected,
+									message: `Buffered ${startBatchBuffer.length}/${expected} proposals. Continue submitting; they will be combined automatically.`,
+								})}],
+								details: { status: "buffered", buffered: startBatchBuffer.length, expected },
+							};
+						}
+						forwardedParams = {
+							...forwardedParams,
+							proposals: startBatchBuffer.slice(0, expected),
+						};
+						startBatchFlushed = expected;
+					}
+				}
+			}
 			const result = isThinkThreadWorker
 						? await runThinkThreadWorkerTool(pi, ctx, name, forwardedParams, signal)
-					: await runJsonCli(pi, commandCtx, name, forwardedParams, signal);
+				: await runJsonCli(pi, commandCtx, name, forwardedParams, signal);
+			if (startBatchFlushed > 0) {
+				startBatchBuffer.splice(0, startBatchFlushed);
+			}
 			if (isThinkThreadWorker && name === "goal_plus_search_get_agent_context" && isRecord(result.details)) {
 				thinkThreadSupplementalEnabled = result.details.supplemental_evaluation_enabled === true;
-				workerSharedCacheEnabled = isRecord(result.details.shared_cache);
+				workerSharedKnowledgeEnabled = isRecord(result.details.shared_knowledge);
 				const active = pi.getActiveTools()
 					.filter((tool) => tool !== "goal_plus_search_get_evidence_detail"
-						&& !SHARED_CACHE_TOOL_NAMES.includes(tool as (typeof SHARED_CACHE_TOOL_NAMES)[number]));
+						&& !SHARED_KNOWLEDGE_TOOL_NAMES.includes(tool as (typeof SHARED_KNOWLEDGE_TOOL_NAMES)[number]));
 				if (thinkThreadSupplementalEnabled) active.push("goal_plus_search_get_evidence_detail");
-				if (workerSharedCacheEnabled) active.push(...SHARED_CACHE_TOOL_NAMES);
+				if (workerSharedKnowledgeEnabled) active.push(...SHARED_KNOWLEDGE_TOOL_NAMES);
 				pi.setActiveTools(active);
 			}
 			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
@@ -2457,11 +2519,11 @@ function activateWorkerContext(
 		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
 		registerRuntimeTool(pi, "goal_plus_search_copy_shared_tool", registered);
 	}
-	const sharedCacheEnabled = isRecord(details.shared_cache)
-		|| details.shared_cache_enabled === true;
-	if (sharedCacheEnabled) {
-		workerSharedCacheEnabled = true;
-		for (const tool of SHARED_CACHE_TOOL_NAMES) {
+	const sharedKnowledgeEnabled = isRecord(details.shared_knowledge)
+		|| details.shared_knowledge_enabled === true;
+	if (sharedKnowledgeEnabled) {
+		workerSharedKnowledgeEnabled = true;
+		for (const tool of SHARED_KNOWLEDGE_TOOL_NAMES) {
 			registerRuntimeTool(pi, tool, registered);
 		}
 	}
@@ -2484,7 +2546,7 @@ function activateWorkerContext(
 			...(details.supplemental_evaluation_enabled === true
 				? { supplemental_evaluation_enabled: true }
 				: {}),
-			...(sharedCacheEnabled ? { shared_cache_enabled: true } : {}),
+			...(sharedKnowledgeEnabled ? { shared_knowledge_enabled: true } : {}),
 		});
 	}
 }

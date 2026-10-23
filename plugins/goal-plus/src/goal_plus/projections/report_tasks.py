@@ -412,6 +412,11 @@ def task_details(
         "plans": plan_payloads,
         "candidates": candidate_payloads,
         "sessions": session_payloads,
+        "shared_knowledge_view": (
+            inputs.shared_knowledge_view.model_dump(mode="json")
+            if inputs.shared_knowledge_view is not None else None
+        ),
+        "knowledge_outcomes": inputs.knowledge_outcomes,
         "reference_impacts": [
             {
                 **impact.__dict__,
