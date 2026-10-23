@@ -156,7 +156,7 @@ def test_verifier_uses_shared_inference_and_registration(
     if mode == "valid":
         result, invocation, usage = worker.execute(task)
         assert result.model_dump(
-            exclude={"steering_findings", "cache_updates"}
+            exclude={"steering_findings", "knowledge_updates"}
         ) == payload
         assert invocation.agent_harness == agent_harness
         assert invocation.runtime_provider == "direct"
@@ -262,7 +262,7 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
             "evidence_refs": [],
             "score_rationales": {"quality_score": "Valid local assessment."},
             "steering_findings": None,
-            "cache_updates": None,
+            "knowledge_updates": None,
         }
         validator = Draft202012Validator(schema)
         validator.validate(payload)

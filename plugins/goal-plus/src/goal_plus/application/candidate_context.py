@@ -20,7 +20,7 @@ from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.references import ReferenceWorkspaces
 from goal_plus.domain.tool_catalog import CandidateToolCapabilities
-from goal_plus.application.shared_cache import SharedCache
+from goal_plus.application.shared_knowledge import SharedKnowledge
 from goal_plus.application.shared_tools import SharedTools
 
 AGENT_CONTEXT_RECENT_ITERATIONS = 3
@@ -79,7 +79,7 @@ class CandidateContext:
         artifacts: CandidateArtifacts,
         references: ReferenceWorkspaces,
         shared_tools: SharedTools,
-        shared_cache: SharedCache,
+        shared_knowledge: SharedKnowledge,
     ) -> None:
         self.state = state
         self.sessions = sessions
@@ -88,7 +88,7 @@ class CandidateContext:
         self.artifacts = artifacts
         self.references = references
         self.shared_tools = shared_tools
-        self.shared_cache = shared_cache
+        self.shared_knowledge = shared_knowledge
 
     def get_agent_context(self, agent_session_id: str) -> dict[str, Any]:
         session = self.sessions.session(agent_session_id)
@@ -130,9 +130,9 @@ class CandidateContext:
             if record.task.share_out_dir is not None
             else []
         )
-        shared_cache = (
-            self.shared_cache.context_snapshot(frozen, session.run_id)
-            if frozen.spec.shared_cache.enabled
+        shared_knowledge = (
+            self.shared_knowledge.context_snapshot(frozen, session.run_id)
+            if frozen.spec.shared_knowledge.enabled
             else None
         )
         specs = {frozen.frozen_spec_id: frozen}
@@ -160,7 +160,7 @@ class CandidateContext:
                 inner_agent,
                 references,
                 catalog,
-                shared_cache,
+                shared_knowledge,
             )
         )
 
@@ -329,8 +329,8 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
         context["reference_workspaces"] = reference_workspaces
     if task.share_out_dir is not None:
         context["tool_family_catalog"] = inputs.tool_catalog
-    if inputs.shared_cache is not None:
-        context["shared_cache"] = inputs.shared_cache
+    if inputs.shared_knowledge is not None:
+        context["shared_knowledge"] = inputs.shared_knowledge
     if is_thinkthread:
         context["agent_harness"] = session.agent_harness
         context["runtime_provider"] = session.runtime_provider

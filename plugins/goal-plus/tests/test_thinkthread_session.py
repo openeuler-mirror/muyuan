@@ -138,7 +138,7 @@ def test_codex_retained_child_still_wakes_without_replacement(codex_actor):
 
     actor, sdk, record, _, settled, bound = codex_actor
     actor.config = replace(actor.config, tool_capabilities=CandidateToolCapabilities(
-        supplemental=True, shared_tools=False, shared_cache=True, references=False, spec_revision=False,
+        supplemental=True, shared_tools=False, shared_knowledge=True, references=False, spec_revision=False,
     ))
     control = NativeSessionControl(actor)
     try:
@@ -162,7 +162,7 @@ def test_codex_retained_child_still_wakes_without_replacement(codex_actor):
             assert len(markers) == 1
             encoded = markers[0].split("=", 1)[1].removesuffix(";")
             assert json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))) == {
-                "supplemental": True, "shared_tools": False, "shared_cache": True, "references": False, "spec_revision": False,
+                "supplemental": True, "shared_tools": False, "shared_knowledge": True, "references": False, "spec_revision": False,
             }
     finally:
         control.close()

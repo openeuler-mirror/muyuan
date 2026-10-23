@@ -7,6 +7,7 @@ import select
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
@@ -43,6 +44,8 @@ class SessionRpcConnection:
         self._on_event = on_event
         self._on_diagnostic = on_diagnostic
         self._threads: list[threading.Thread] = []
+        self._stderr_tail: deque[str] = deque(maxlen=32)
+        self._stderr_lock = threading.Lock()
 
     def start(self) -> None:
         for target in (self._read_stdout, self._read_stderr):
@@ -75,14 +78,24 @@ class SessionRpcConnection:
         except Exception as exc:
             self._fail(exc)
         finally:
-            self._fail(SessionTransportError("native session transport closed"))
+            with self._stderr_lock:
+                diagnostic = "".join(self._stderr_tail).strip()
+            detail = "native session transport closed"
+            if diagnostic:
+                # Preserve the transport error class while exposing the
+                # bounded launcher/relay stderr that identifies the failure.
+                detail = f"{detail}; worker stderr: {diagnostic[-4000:]}"
+            self._fail(SessionTransportError(detail))
 
     def _read_stderr(self) -> None:
         # Drain diagnostics without retaining an unbounded or model-visible log.
         try:
             while chunk := self.process.stderr.read(DEFAULT_BUFFER_SIZE):
+                text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
+                with self._stderr_lock:
+                    self._stderr_tail.append(text)
                 if self._on_diagnostic is not None:
-                    self._on_diagnostic(chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace"))
+                    self._on_diagnostic(text)
         except (OSError, ValueError):
             pass
 

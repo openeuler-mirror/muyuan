@@ -986,38 +986,48 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_read_shared_cache(
+    def goal_plus_search_read_shared_knowledge(
         agent_session_id: str,
     ) -> dict[str, Any]:
-        """读取当前 run 的 shared cache 投影。
+        """读取当前 run 的 shared knowledge board 投影。
 
         返回 sections（操作者冻结的模板：key、标题、要求、cardinality、是否需要
-        evidence）与 entries（各 writer 追加的客观事实）。任何 candidate 或 verifier
+        evidence）与 entries（各 writer 追加的知识条目）。任何 candidate 或 verifier
         都可随时查阅，避免对同一问题重复探索。内容为追加式事实日志的读时投影，
         不包含 peer workspace、transcript 或推理。
         """
-        return tools.goal_plus_search_read_shared_cache(agent_session_id)
+        return tools.goal_plus_search_read_shared_knowledge(agent_session_id)
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_append_shared_cache(
+    def goal_plus_search_append_shared_knowledge(
         agent_session_id: str,
         section: str,
-        content: Annotated[str, Field(min_length=1)],
+        entry_type: str,
+        subject: str,
+        content: dict[str, str],
+        confidence: str | None = None,
+        limits: str | None = None,
         supersedes: str | None = None,
         evidence_ref: str | None = None,
     ) -> dict[str, Any]:
-        """向 shared cache 的一个 section 追加一条客观事实。
+        """向 shared knowledge board 的一个 section 追加一条结构化知识条目。
 
-        content 会做空白归一化并受 max_content_chars 限制；requires_evidence 的
-        section 必须提供 evidence_ref（指向已结算 Evidence 或 verifier 输出）。
-        修正先前记录时传 supersedes=record_id：旧条目从投影中移除，新条目生效，
-        但事实日志保持追加式。写入仅记录客观内容，不影响评分。
+        entry_type 限 fact|think|subject|question；subject 是语义主键（格式由
+        冻结模板定义）；content 是 per-section 中段键的字典（键名由冻结模板的
+        content_keys 定义）。fact 必附 evidence_ref=cXXX:iter（runtime 自动锚定
+        到最近已结算 iteration）；think 不得附 evidence_ref。修正先前记录传
+        supersedes=record_id。相同内容幂等去重；同 subject 矛盾时响应携带
+        contradiction_with。写入不影响评分。
         """
-        return tools.goal_plus_search_append_shared_cache(
+        return tools.goal_plus_search_append_shared_knowledge(
             agent_session_id,
             section,
+            entry_type,
+            subject,
             content,
+            confidence,
+            limits,
             supersedes,
             evidence_ref,
         )

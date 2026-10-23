@@ -35,7 +35,7 @@ from goal_plus.domain.search import (
     VerifierInvalidationReason,
 )
 from goal_plus.domain.selection import ControllerSelectionDirective
-from goal_plus.domain.shared_cache import SharedCacheView
+from goal_plus.domain.shared_knowledge import SharedKnowledgeView
 from goal_plus.domain.shared_tools import (
     ToolizationDecision,
 )
@@ -102,7 +102,7 @@ class FileSearchRuntime:
         self.context = services.context
         self.queries = services.queries
         self.evidence_reads = services.evidence_reads
-        self.shared_cache = services.shared_cache
+        self.shared_knowledge = services.shared_knowledge
         self.shared_tools = services.shared_tools
         self.trace = services.trace
 
@@ -150,26 +150,29 @@ class FileSearchRuntime:
 
     def accept_verifier_record(self, record, *, execute, steering_host=None) -> None:
         frozen = self.queries.state.read_frozen_spec(record.subject.frozen_spec_id)
-        shared_cache = getattr(frozen.spec, "shared_cache", None)
-        if shared_cache is not None and shared_cache.enabled:
-            self._apply_verifier_cache_updates(record, frozen)
+        shared_knowledge = getattr(frozen.spec, "shared_knowledge", None)
+        if shared_knowledge is not None and shared_knowledge.enabled:
+            self._apply_verifier_knowledge_updates(record, frozen)
         if frozen.spec.strategy.allocation is not None or frozen.spec.strategy.steering is not None:
             self._adaptive_search.accept_verifier_record(record,
                 policy=frozen.spec.strategy.allocation, max_parallel=frozen.spec.budget.max_parallel,
                 execute=execute, steering_host=steering_host,
                 steering_policy=frozen.spec.strategy.steering)
 
-    def _apply_verifier_cache_updates(self, record, frozen) -> None:
-        if record.outcome != "completed" or not record.cache_updates:
+    def _apply_verifier_knowledge_updates(self, record, frozen) -> None:
+        if record.outcome != "completed" or not record.knowledge_updates:
             return
         updates = [
             update.model_dump(mode="json") if hasattr(update, "model_dump") else update
-            for update in record.cache_updates
+            for update in record.knowledge_updates
         ]
-        self.shared_cache.append_verifier_updates(
+        self.shared_knowledge.append_verifier_updates(
             record.subject.run_id,
             frozen,
             updates,
+            default_evidence_ref=(
+                f"{record.subject.candidate_id}:{record.subject.iteration}"
+            ),
         )
 
     def recover_allocation(self, run_id: str, *, cancel, dispatch):
@@ -569,33 +572,41 @@ class FileSearchRuntime:
             snapshot_hash=snapshot_hash,
         )
 
-    def read_shared_cache(
+    def read_shared_knowledge(
         self, agent_session_id: str,
-    ) -> tuple[FrozenSpec, SharedCacheView]:
-        return self.shared_cache.view_for_candidate(agent_session_id)
+    ) -> tuple[FrozenSpec, SharedKnowledgeView]:
+        return self.shared_knowledge.view_for_candidate(agent_session_id)
 
-    def read_shared_cache_for_run(
+    def read_shared_knowledge_for_run(
         self, run_id: str,
-    ) -> tuple[FrozenSpec, SharedCacheView]:
+    ) -> tuple[FrozenSpec, SharedKnowledgeView]:
         run = self.queries.state.read_run(run_id)
         frozen = self.queries.state.read_frozen_spec(run.frozen_spec_id)
-        if not frozen.spec.shared_cache.enabled:
-            return frozen, SharedCacheView()
-        return frozen, self.shared_cache.view_for_run(run_id, frozen)
+        if not frozen.spec.shared_knowledge.enabled:
+            return frozen, SharedKnowledgeView()
+        return frozen, self.shared_knowledge.view_for_run(run_id, frozen)
 
-    def append_shared_cache(
+    def append_shared_knowledge(
         self,
         agent_session_id: str,
         *,
         section: str,
-        content: str,
+        entry_type: str,
+        subject: str,
+        content: dict[str, str],
+        confidence: str | None = None,
+        limits: str | None = None,
         supersedes: str | None = None,
         evidence_ref: str | None = None,
     ) -> dict[str, Any]:
-        return self.shared_cache.append(
+        return self.shared_knowledge.append(
             agent_session_id,
             section=section,
+            entry_type=entry_type,
+            subject=subject,
             content=content,
+            confidence=confidence,
+            limits=limits,
             supersedes=supersedes,
             evidence_ref=evidence_ref,
         )

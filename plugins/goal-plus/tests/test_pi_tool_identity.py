@@ -41,7 +41,7 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug):
         expected = (
             {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)},
              "tool_capabilities": {"references": True, "spec_revision": True, "supplemental": False,
-                                   "shared_tools": False, "shared_cache": False}}
+                                   "shared_tools": False, "shared_knowledge": False}}
             if role == "worker" else
             {"status": "inactive", "reason": "no_active_goal",
              "message": "当前 Pi 会话不在 Goal Plus 任务中；Goal Plus 工具不可用。",
@@ -571,7 +571,7 @@ if (process.env.GOAL_PLUS_TT_SDK_TEST) {
       {type: "message", text: "registration_nonce=12345678-1234-1234-1234-123456789abc agent_session_id=agent_owned"},
       {type: "custom", customType: "goal-plus-worker-context", data: {
         agent_session_id: "agent_owned", candidate_task: {workspace: cwd},
-        tool_capabilities: {references: false, spec_revision: false, supplemental: false, shared_tools: false, shared_cache: false},
+        tool_capabilities: {references: false, spec_revision: false, supplemental: false, shared_tools: false, shared_knowledge: false},
       }},
     ];
     await start();
@@ -929,7 +929,7 @@ if (process.env.GOAL_PLUS_PI_ROLE !== "main") {
     foreign("goal_plus_search_get_agent_context");
     assert.equal((await events.get("tool_call")(event("goal_plus_search_get_agent_context"), ctx)).block, true);
     globalThis.status = {agent_session_id: "worker-session", candidate_task: {workspace: cwd},
-      tool_capabilities: {references: true, spec_revision: true, supplemental: false, shared_tools: false, shared_cache: false}};
+      tool_capabilities: {references: true, spec_revision: true, supplemental: false, shared_tools: false, shared_knowledge: false}};
     await call("goal_plus_search_get_agent_context"); // Only the registered callback activates context.
     assert(tools.has("goal_plus_search_reference_open"));
     assert(tools.has("goal_plus_search_revise_spec"));

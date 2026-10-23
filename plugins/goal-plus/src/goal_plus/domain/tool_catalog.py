@@ -39,8 +39,8 @@ SEARCH_TOOL_NAMES = {
     "goal_plus_search_copy_shared_tool",
     "goal_plus_search_get_evidence_detail",
     "goal_plus_search_get_agent_observability",
-    "goal_plus_search_read_shared_cache",
-    "goal_plus_search_append_shared_cache",
+    "goal_plus_search_read_shared_knowledge",
+    "goal_plus_search_append_shared_knowledge",
     "goal_plus_search_run_verifier",
     "goal_plus_search_list_iterations",
     "goal_plus_search_list_allocation_decisions",
@@ -74,8 +74,8 @@ CANDIDATE_TOOL_NAMES = frozenset(
         "goal_plus_search_stage_shared_tool",
         "goal_plus_search_copy_shared_tool",
         "goal_plus_search_get_evidence_detail",
-        "goal_plus_search_read_shared_cache",
-        "goal_plus_search_append_shared_cache",
+        "goal_plus_search_read_shared_knowledge",
+        "goal_plus_search_append_shared_knowledge",
         "goal_plus_search_run_verifier",
         "goal_plus_search_list_iterations",
     }
@@ -124,8 +124,8 @@ CANDIDATE_CAPABILITIES = {
     "goal_plus_search_get_evidence_detail": "supplemental",
     "goal_plus_search_stage_shared_tool": "shared_tools",
     "goal_plus_search_copy_shared_tool": "shared_tools",
-    "goal_plus_search_read_shared_cache": "shared_cache",
-    "goal_plus_search_append_shared_cache": "shared_cache",
+    "goal_plus_search_read_shared_knowledge": "shared_knowledge",
+    "goal_plus_search_append_shared_knowledge": "shared_knowledge",
 }
 
 
@@ -136,7 +136,7 @@ class CandidateToolCapabilities(SearchModel):
 
     supplemental: bool
     shared_tools: bool
-    shared_cache: bool
+    shared_knowledge: bool
     references: bool
     spec_revision: bool
 
@@ -145,7 +145,7 @@ class CandidateToolCapabilities(SearchModel):
         return cls(
             supplemental=frozen.supplemental_evaluation_enabled,
             shared_tools=frozen.spec.shared_dir.enabled,
-            shared_cache=frozen.spec.shared_cache.enabled,
+            shared_knowledge=frozen.spec.shared_knowledge.enabled,
             references=frozen.spec.workspace.provider != "thinkthread",
             spec_revision=(
                 not frozen.spec.strategy.adaptive_search_enabled

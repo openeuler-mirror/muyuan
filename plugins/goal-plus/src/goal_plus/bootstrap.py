@@ -168,22 +168,22 @@ def build_internal_agent_work(root_dir: Path | str) -> InternalAgentWork:
     return InternalAgentWork(FileAnnotationState(root_dir))
 
 
-def build_settlement_verifier(root_dir, shared_cache=None):
+def build_settlement_verifier(root_dir, shared_knowledge=None):
     from goal_plus.application.settlement_verifier import SettlementVerifier
     from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
-    from goal_plus.infrastructure.state.shared_cache import FileSharedCacheState
+    from goal_plus.infrastructure.state.shared_knowledge import FileSharedKnowledgeState
     from goal_plus.infrastructure.state.candidate_settlement import (
         FileCandidateSettlementState,
     )
 
-    cache_snapshot = None
-    if shared_cache is not None:
-        def cache_snapshot(frozen, run_id):
-            return shared_cache.context_snapshot(frozen, run_id)
+    knowledge_snapshot = None
+    if shared_knowledge is not None:
+        def knowledge_snapshot(frozen, run_id):
+            return shared_knowledge.context_snapshot(frozen, run_id)
 
     return SettlementVerifier(workflow=VerifierWorkflow(FileVerifierState(root_dir), SystemClock()),
         artifacts=ProviderArtifactReader(AgentPosixSdkClient), source=FileCandidateQueries(root_dir),
-        cache_snapshot=cache_snapshot)
+        knowledge_snapshot=knowledge_snapshot)
 
 
 def build_goal_authorization(
@@ -298,7 +298,7 @@ def build_candidate_settlement(
     artifacts,
     ledger,
     shared_tools,
-    shared_cache,
+    shared_knowledge,
     persist_run,
     trace,
 ):
@@ -320,7 +320,7 @@ def build_candidate_settlement(
         shared_tools=shared_tools,
         checkpoints=checkpoints,
         persist_run=persist_run,
-        verifier_submission=build_settlement_verifier(root_dir, shared_cache),
+        verifier_submission=build_settlement_verifier(root_dir, shared_knowledge),
         trace=trace,
     )
     return settlement, checkpoints
@@ -401,16 +401,16 @@ def build_shared_tools(root_dir: Path | str, annotation: AnnotationWorkflow, ses
     )
 
 
-def build_shared_cache(root_dir: Path | str, sessions):
-    from goal_plus.application.shared_cache import SharedCache
+def build_shared_knowledge(root_dir: Path | str, sessions):
+    from goal_plus.application.shared_knowledge import SharedKnowledge
     from goal_plus.infrastructure.state.candidate_settlement import (
         FileCandidateSettlementState,
     )
-    from goal_plus.infrastructure.state.shared_cache import FileSharedCacheState
+    from goal_plus.infrastructure.state.shared_knowledge import FileSharedKnowledgeState
 
-    return SharedCache(
+    return SharedKnowledge(
         FileCandidateSettlementState(root_dir),
-        FileSharedCacheState(root_dir),
+        FileSharedKnowledgeState(root_dir),
         sessions,
         SystemClock(),
     )
@@ -694,7 +694,7 @@ def build_search_queries(
     annotation,
     admission,
     shared_tools,
-    shared_cache,
+    shared_knowledge,
     trace,
 ):
     from goal_plus.application.candidate_context import CandidateContext
@@ -721,7 +721,7 @@ def build_search_queries(
             artifacts=artifacts,
             references=references,
             shared_tools=shared_tools,
-            shared_cache=shared_cache,
+            shared_knowledge=shared_knowledge,
         ),
         SearchQueries(
             state=state,
@@ -756,7 +756,7 @@ from goal_plus.application.search_research import SearchResearch
 from goal_plus.application.search_run import SearchRun
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.shared_tools import SharedTools
-from goal_plus.application.shared_cache import SharedCache
+from goal_plus.application.shared_knowledge import SharedKnowledge
 from goal_plus.application.references import ReferenceWorkspaces
 from goal_plus.application.candidate_settlement import CandidateSettlement
 from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
@@ -789,7 +789,7 @@ class SearchServices:
     search_run: SearchRun
     artifacts: CandidateArtifacts
     shared_tools: SharedTools
-    shared_cache: SharedCache
+    shared_knowledge: SharedKnowledge
     references: ReferenceWorkspaces
     recovery: CandidateRecoveryWorkflow
     verification: CandidateVerification
@@ -856,7 +856,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
     )
     artifacts = build_candidate_artifacts(candidate_ledger.workspace)
     shared_tools = build_shared_tools(root_dir, annotation, candidate_sessions)
-    shared_cache = build_shared_cache(root_dir, candidate_sessions)
+    shared_knowledge = build_shared_knowledge(root_dir, candidate_sessions)
     references = build_references(root_dir, candidate_sessions, trace)
     settlement, checkpoints = build_candidate_settlement(
         root_dir,
@@ -865,7 +865,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         artifacts=artifacts,
         ledger=candidate_ledger,
         shared_tools=shared_tools,
-        shared_cache=shared_cache,
+        shared_knowledge=shared_knowledge,
         persist_run=search_run.persist,
         trace=trace,
     )
@@ -934,7 +934,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         annotation=annotation,
         admission=annotation_admission,
         shared_tools=shared_tools,
-        shared_cache=shared_cache,
+        shared_knowledge=shared_knowledge,
         trace=trace,
     )
     reporter = build_report(
@@ -954,7 +954,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         search_run=search_run,
         artifacts=artifacts,
         shared_tools=shared_tools,
-        shared_cache=shared_cache,
+        shared_knowledge=shared_knowledge,
         references=references,
         recovery=recovery,
         verification=verification,

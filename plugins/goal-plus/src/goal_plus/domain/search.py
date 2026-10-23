@@ -48,7 +48,7 @@ from goal_plus.domain.artifacts import (
 )
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.selection import SelectionSpec
-from goal_plus.domain.shared_cache import SharedCacheSpec
+from goal_plus.domain.shared_knowledge import SharedKnowledgeSpec
 from goal_plus.domain.shared_tools import SharedDirSpec
 from goal_plus.domain.verifier import VerifierSpec
 
@@ -274,6 +274,19 @@ class StrategyOptions(SearchModel):
     def fork_enabled(self) -> bool:
         return self.initial_context == "fork"
 
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_orchestration_mode(cls, value: Any) -> Any:
+        # Frozen specs written before adaptive_search replaced the flat
+        # orchestration_mode enum still carry the old key; drop it so
+        # historical runs stay loadable (parallel_loops needed no policy
+        # layer; adaptive_search runs must re-freeze under the new schema).
+        if isinstance(value, dict) and "orchestration_mode" in value:
+            payload = dict(value)
+            payload.pop("orchestration_mode", None)
+            return payload
+        return value
+
     @field_validator("name")
     @classmethod
     def name_must_be_nonempty(cls, value: str) -> str:
@@ -410,7 +423,21 @@ class SearchSpec(SearchModel):
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     workspace: WorkspaceSpec = Field(default_factory=WorkspaceSpec)
     shared_dir: SharedDirSpec = Field(default_factory=SharedDirSpec)
-    shared_cache: SharedCacheSpec = Field(default_factory=SharedCacheSpec)
+    shared_knowledge: SharedKnowledgeSpec = Field(
+        default_factory=SharedKnowledgeSpec
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_shared_cache(cls, value: Any) -> Any:
+        # Frozen specs written before the shared-knowledge board carried the
+        # same template under the former "shared_cache" key; keep them
+        # loadable so historical runs stay readable.
+        if isinstance(value, dict) and "shared_cache" in value:
+            payload = dict(value)
+            payload.setdefault("shared_knowledge", payload.pop("shared_cache"))
+            return payload
+        return value
 
     @field_validator("metric_name")
     @classmethod
@@ -488,7 +515,16 @@ class SearchSpecDraft(SearchModel):
     strategy: StrategySpec | None = None
     workspace: WorkspaceSpec | None = None
     shared_dir: SharedDirSpec | None = None
-    shared_cache: SharedCacheSpec | None = None
+    shared_knowledge: SharedKnowledgeSpec | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_shared_cache(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "shared_cache" in value:
+            payload = dict(value)
+            payload.setdefault("shared_knowledge", payload.pop("shared_cache"))
+            return payload
+        return value
 
 
 class BootstrapVerifierResult(SearchModel):

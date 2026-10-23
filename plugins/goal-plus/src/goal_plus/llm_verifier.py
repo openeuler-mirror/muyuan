@@ -18,8 +18,8 @@ from goal_plus.domain.verifier import (
     VerifierResult,
     VerifierTask,
     validate_scores,
-    validate_cache_updates,
-    verifier_cache_contract,
+    validate_knowledge_updates,
+    verifier_knowledge_contract,
     verifier_result_schema,
     diagnostic_references,
     validate_diagnostics,
@@ -66,17 +66,19 @@ VERIFIER_ROLE_INSTRUCTIONS = (
 )
 
 
-def _cache_contract(task: VerifierTask):
-    return verifier_cache_contract(task.input.cache_snapshot)
+def _knowledge_contract(task: VerifierTask):
+    return verifier_knowledge_contract(task.input.knowledge_snapshot)
 
 
-CACHE_UPDATE_INSTRUCTIONS = (
-    "shared_cache_snapshot lists the run's objective fact sections with their "
+KNOWLEDGE_UPDATE_INSTRUCTIONS = (
+    "shared_knowledge_snapshot lists the run's objective fact sections with their "
     "requirements and the current entries. Use it as reference context for your "
-    "assessment. Independently of your scores, propose cache_updates for objective "
-    "facts you established during this evaluation that the cache is missing or "
+    "assessment. Independently of your scores, propose knowledge_updates for objective "
+    "facts you established during this evaluation that the knowledge board is missing or "
     "states imprecisely: use the exact section keys from the snapshot, one fact per "
-    "entry, bound each content to its section's requirement, set supersedes to the "
+    "entry, set subject to the entry's subject line (for example "
+    "src/file.c:120#cwe_190), give content as a JSON object mapping the section's "
+    "content keys to strings, set supersedes to the "
     "record_id of an existing entry you are correcting (never append a parallel "
     "entry for the same fact), and set evidence_ref when the section requires it. "
     "Propose an empty list when you established nothing new. Never propose "
@@ -202,7 +204,7 @@ class LlmVerifier:
         validate_scores(parsed.scores, task.score_contract.score_rules)
         validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
                              diagnostic_references(task.input, task.subject))
-        validate_cache_updates(parsed.cache_updates, _cache_contract(task))
+        validate_knowledge_updates(parsed.knowledge_updates, _knowledge_contract(task))
         return parsed
 
     def _prompt(
@@ -263,8 +265,8 @@ class LlmVerifier:
             )
         if task.score_contract.diagnostics is not None:
             payload["diagnostic_references"] = diagnostic_references(task.input, task.subject)
-        if task.input.cache_snapshot is not None:
-            payload["shared_cache_snapshot"] = task.input.cache_snapshot
+        if task.input.knowledge_snapshot is not None:
+            payload["shared_knowledge_snapshot"] = task.input.knowledge_snapshot
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
         prompt = (
@@ -326,13 +328,13 @@ class LlmVerifier:
             reasoning = inherited.get("thinking_level")
         timeout = 900.0
         score_rules = task.score_contract.score_rules
-        cache_contract = _cache_contract(task)
-        output_schema = verifier_result_schema(score_rules, task.score_contract.diagnostics, cache_contract)
+        knowledge_contract = _knowledge_contract(task)
+        output_schema = verifier_result_schema(score_rules, task.score_contract.diagnostics, knowledge_contract)
         instructions = self._evaluation_instructions(score_rules)
         if task.score_contract.diagnostics is not None:
             instructions += "\n\n" + task.score_contract.diagnostics.instructions
-        if cache_contract is not None:
-            instructions += "\n\n" + CACHE_UPDATE_INSTRUCTIONS
+        if knowledge_contract is not None:
+            instructions += "\n\n" + KNOWLEDGE_UPDATE_INSTRUCTIONS
         pi_tools = None
         if agent_harness == "pi" and runtime_provider == "direct":
             instructions += (

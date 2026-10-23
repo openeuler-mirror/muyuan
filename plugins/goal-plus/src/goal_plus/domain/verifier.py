@@ -267,13 +267,13 @@ class VerifierInvocationRecord(SearchModel):
     scoring_token_logprobs: bool = False
 
 
-# Shared-cache proposals: bounded objective facts, never free-form essays.
-MAX_CACHE_UPDATES = 8
-MAX_CACHE_UPDATE_CHARS = 2000
+# Shared-knowledge proposals: bounded objective facts, never free-form essays.
+MAX_KNOWLEDGE_UPDATES = 8
+MAX_KNOWLEDGE_UPDATE_CHARS = 2000
 
 
-class VerifierCacheUpdate(SearchModel):
-    """One verifier-proposed shared cache entry (proposal-ledger pattern).
+class VerifierKnowledgeUpdate(SearchModel):
+    """One verifier-proposed shared knowledge entry (proposal-ledger pattern).
 
     The trusted runtime, not the model, validates and applies the update:
     section must belong to the frozen closed key set, content is bounded,
@@ -283,30 +283,35 @@ class VerifierCacheUpdate(SearchModel):
     """
 
     section: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
-    content: str = Field(min_length=1, max_length=MAX_CACHE_UPDATE_CHARS)
+    content: str = Field(min_length=1, max_length=MAX_KNOWLEDGE_UPDATE_CHARS)
+    # Structured board fields. Optional so legacy verdict outputs without
+    # them still parse; the shared-knowledge application rejects updates
+    # that lack a subject instead of invalidating the whole verdict.
+    subject: str | None = Field(default=None, max_length=128)
+    entry_type: str | None = Field(default=None, max_length=16)
     supersedes: str | None = Field(default=None, max_length=128)
     evidence_ref: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
-    def content_is_collapsed(self) -> "VerifierCacheUpdate":
+    def content_is_collapsed(self) -> "VerifierKnowledgeUpdate":
         if not " ".join(self.content.split()):
-            raise ValueError("cache update content must be non-empty")
+            raise ValueError("knowledge update content must be non-empty")
         return self
 
 
-class VerifierCacheContract(SearchModel):
-    """Cache sections the verifier may read and propose updates for."""
+class VerifierKnowledgeContract(SearchModel):
+    """Knowledge sections the verifier may read and propose updates for."""
 
     sections: tuple[tuple[str, str, str], ...] = ()
-    # (key, title, requirement) triples from the frozen SharedCacheSpec.
+    # (key, title, requirement) triples from the frozen SharedKnowledgeSpec.
 
     @property
     def keys(self) -> frozenset[str]:
         return frozenset(key for key, _title, _requirement in self.sections)
 
 
-def verifier_cache_contract(snapshot: dict[str, Any] | None) -> VerifierCacheContract | None:
-    """Derive the update contract from the frozen input's cache snapshot."""
+def verifier_knowledge_contract(snapshot: dict[str, Any] | None) -> VerifierKnowledgeContract | None:
+    """Derive the update contract from the frozen input's knowledge snapshot."""
 
     if not isinstance(snapshot, dict) or not snapshot.get("updates_allowed"):
         return None
@@ -324,26 +329,26 @@ def verifier_cache_contract(snapshot: dict[str, Any] | None) -> VerifierCacheCon
     )
     if not triples:
         return None
-    return VerifierCacheContract(sections=triples)
+    return VerifierKnowledgeContract(sections=triples)
 
 
-def validate_cache_updates(
-    updates: list[VerifierCacheUpdate] | None,
-    contract: VerifierCacheContract | None,
+def validate_knowledge_updates(
+    updates: list[VerifierKnowledgeUpdate] | None,
+    contract: VerifierKnowledgeContract | None,
 ) -> None:
     """Adapter-level validation: illegal proposals invalidate the whole output."""
 
     if contract is None or not contract.keys:
         if updates:
-            raise ValueError("cache updates are not enabled by the frozen contract")
+            raise ValueError("knowledge updates are not enabled by the frozen contract")
         return
     if updates is None:
-        raise ValueError("cache updates require an explicit list, possibly empty")
-    if len(updates) > MAX_CACHE_UPDATES:
-        raise ValueError(f"at most {MAX_CACHE_UPDATES} cache updates per verdict")
+        raise ValueError("knowledge updates require an explicit list, possibly empty")
+    if len(updates) > MAX_KNOWLEDGE_UPDATES:
+        raise ValueError(f"at most {MAX_KNOWLEDGE_UPDATES} knowledge updates per verdict")
     for update in updates:
         if update.section not in contract.keys:
-            raise ValueError(f"cache update section {update.section!r} is outside the frozen key set")
+            raise ValueError(f"knowledge update section {update.section!r} is outside the frozen key set")
 
 
 class VerifierResult(SearchModel):
@@ -352,7 +357,18 @@ class VerifierResult(SearchModel):
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str]
     steering_findings: SteeringFindings | None = None
-    cache_updates: list[VerifierCacheUpdate] | None = None
+    knowledge_updates: list[VerifierKnowledgeUpdate] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_cache_updates(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "cache_updates" in value:
+            payload = dict(value)
+            payload.setdefault(
+                "knowledge_updates", payload.pop("cache_updates")
+            )
+            return payload
+        return value
 
     @model_validator(mode="after")
     def scores_and_rationales_are_atomic(self) -> "VerifierResult":
@@ -406,16 +422,22 @@ class VerifierInput(SearchModel):
     allocation_depth: int = Field(default=0, ge=0)
     input_error: str | None = None
     replaces_candidate_id: str | None = None
-    # Frozen shared-cache projection (sections template + entries) captured at
-    # settlement time; None when the run has no cache or verifier_input=false.
-    cache_snapshot: dict[str, Any] | None = None
+    # Frozen shared-knowledge projection (sections template + entries) captured at
+    # settlement time; None when the run has no board or verifier_input=false.
+    knowledge_snapshot: dict[str, Any] | None = None
     # Present only for fork runs.  This is a bounded, read-only
     # projection; it never grants host control or changes hard Evidence.
     dispatch_audit_context: DispatchAuditContext | None = None
 
     @model_validator(mode="before")
     @classmethod
-    def reject_legacy_dispatch_field(cls, value: Any) -> Any:
+    def migrate_legacy_cache_snapshot(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "cache_snapshot" in value:
+            payload = dict(value)
+            payload.setdefault(
+                "knowledge_snapshot", payload.pop("cache_snapshot")
+            )
+            return payload
         if isinstance(value, dict) and "fork_audit_context" in value:
             raise ValueError(
                 "legacy fork_audit_context field is unsupported; use dispatch_audit_context"
@@ -502,17 +524,28 @@ class VerifierRecord(SearchModel):
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str] = Field(default_factory=dict)
     steering_findings: SteeringFindings | None = None
-    cache_updates: list[VerifierCacheUpdate] | None = None
+    knowledge_updates: list[VerifierKnowledgeUpdate] | None = None
     invocation: VerifierInvocationRecord | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     created_at: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_cache_updates(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "cache_updates" in value:
+            payload = dict(value)
+            payload.setdefault(
+                "knowledge_updates", payload.pop("cache_updates")
+            )
+            return payload
+        return value
 
     @model_validator(mode="after")
     def scores_are_valid(self) -> "VerifierRecord":
         if self.outcome == "failed":
             if (not self.error or self.quality_score is not None or self.scores is not None
                     or self.score_rationales or self.steering_findings is not None
-                    or self.cache_updates is not None):
+                    or self.knowledge_updates is not None):
                 raise ValueError("failed verifier record requires an error and no partial scores")
             return self
         if self.quality_score is None or self.invocation is None or self.error is not None:
@@ -572,7 +605,7 @@ def validate_scores(
 def verifier_result_schema(
     score_rules: Sequence[VerifierScoreRule],
     diagnostics: DiagnosticContract | None = None,
-    cache_contract: VerifierCacheContract | None = None,
+    knowledge_contract: VerifierKnowledgeContract | None = None,
 ) -> dict[str, Any]:
     schema = VerifierResult.model_json_schema()
     properties = schema["properties"]
@@ -583,17 +616,17 @@ def verifier_result_schema(
         schema.setdefault("$defs", {}).update(frozen_schema.pop("$defs", {}))
         properties["steering_findings"] = frozen_schema
         schema.setdefault("required", []).append("steering_findings")
-    if cache_contract is None or not cache_contract.keys:
-        properties["cache_updates"] = {"type": "null"}
+    if knowledge_contract is None or not knowledge_contract.keys:
+        properties["knowledge_updates"] = {"type": "null"}
     else:
-        update_schema = VerifierCacheUpdate.model_json_schema()
-        schema.setdefault("$defs", {})["VerifierCacheUpdate"] = update_schema
-        properties["cache_updates"] = {
+        update_schema = VerifierKnowledgeUpdate.model_json_schema()
+        schema.setdefault("$defs", {})["VerifierKnowledgeUpdate"] = update_schema
+        properties["knowledge_updates"] = {
             "type": "array",
-            "items": {"$ref": "#/$defs/VerifierCacheUpdate"},
-            "maxItems": MAX_CACHE_UPDATES,
+            "items": {"$ref": "#/$defs/VerifierKnowledgeUpdate"},
+            "maxItems": MAX_KNOWLEDGE_UPDATES,
         }
-        schema.setdefault("required", []).append("cache_updates")
+        schema.setdefault("required", []).append("knowledge_updates")
     if score_rules:
         properties["scores"] = {
             "type": "object",
@@ -676,10 +709,10 @@ __all__ = [
     "DiagnosticQuestion",
     "DiagnosticBoundary",
     "SteeringFindings",
-    "VerifierCacheUpdate",
-    "VerifierCacheContract",
-    "validate_cache_updates",
-    "verifier_cache_contract",
+    "VerifierKnowledgeUpdate",
+    "VerifierKnowledgeContract",
+    "validate_knowledge_updates",
+    "verifier_knowledge_contract",
     "diagnostic_references",
     "validate_diagnostics",
     "QUALITY_CRITERIA",

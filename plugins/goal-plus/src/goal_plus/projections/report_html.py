@@ -997,6 +997,76 @@ def _render_timeline(
     )
 
 
+
+
+
+
+
+def _render_unified_entries(task: dict[str, Any]) -> str:
+    """Render Evidence and Knowledge entries as one interleaved card list.
+
+    Both kinds use the same sk-entry card (spec §3.2.2): signature header
+    with type badge, source label, writer, evidence_ref; then a layered
+    key→value body with top-level keys and a nested content sub-dict.
+    Entries sort by creation time with no grouping or visual separation.
+    """
+    from goal_plus.projections.shared_knowledge_html import (
+        _STYLE, evidence_card, knowledge_card,
+    )
+
+    cards: list[tuple[str, str]] = []
+
+    for candidate in task.get("candidates") or []:
+        cid = str(candidate.get("candidate_id") or "")
+        selected = bool(candidate.get("selected"))
+        for iteration in candidate.get("iterations") or []:
+            if not iteration.get("agent_session_id"):
+                continue
+            created = str(iteration.get("created_at") or "")
+            cards.append((
+                created,
+                evidence_card(
+                    candidate_id=cid,
+                    iteration=iteration,
+                    selected=selected,
+                ),
+            ))
+
+    view = task.get("shared_knowledge_view")
+    if view:
+        outcomes = task.get("knowledge_outcomes") or {}
+        entries = view.get("entries") if isinstance(view, dict) else view.entries
+        if entries:
+            def _get(entry, key):
+                if isinstance(entry, dict):
+                    return entry.get(key)
+                return getattr(entry, key, None)
+            counts: dict[str, int] = {}
+            for entry in entries:
+                k = f"{_get(entry, 'section_key')}:{_get(entry, 'subject')}"
+                counts[k] = counts.get(k, 0) + 1
+            for entry in entries:
+                k = f"{_get(entry, 'section_key')}:{_get(entry, 'subject')}"
+                rid = _get(entry, "record_id")
+                cards.append((
+                    str(_get(entry, "record_id") or ""),
+                    knowledge_card(
+                        entry,
+                        outcomes.get(rid) if rid else None,
+                        contradiction=counts.get(k, 0) > 1,
+                    ),
+                ))
+
+    if not cards:
+        return "<p>No shared Evidence was persisted for this Search task.</p>"
+
+    cards.sort(key=lambda pair: pair[0])
+    return (
+        f"<style>{_STYLE}</style>"
+        f'<div class="sk-entry-list">{"".join(c for _, c in cards)}</div>'
+    )
+
+
 def _render_shared_evidence_view(task: dict[str, Any]) -> str:
     verifier_enabled = "verifier_tasks" in task
     local_rows = [
@@ -2065,7 +2135,7 @@ def _render_task(
         f"{_render_evaluation_contracts(task)}"
         f"{_render_fork(task)}"
         '<section class="subsection"><h3>Shared Evidence View</h3>'
-        f"{_render_shared_evidence_view(task)}</section>"
+        f"{_render_unified_entries(task)}</section>"
         '<section class="subsection"><h3>Candidate Evidence</h3>'
         f"{_render_candidates(task)}</section>"
         f"{_render_reference_impacts(task)}"

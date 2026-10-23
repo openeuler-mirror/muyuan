@@ -146,8 +146,8 @@ def test_freeze_schema_stays_below_codex_structural_compaction_budget(tmp_path):
     normalized = normalize(schema)
     # The complete adaptive policy contract is served with MCP-only
     # additionalProperties pruning; Pydantic remains authoritative at call time.
-    # Budget includes the shared_cache spec surface (sections, verifier
-    # update bounds) added by the shared-cache fact plane.
+    # Budget includes the shared_knowledge spec surface (sections, verifier
+    # update bounds) added by the shared-knowledge fact plane.
     assert len(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode()) <= 6_500
     resolved = dereference_refs(normalized)["properties"]["spec"]["properties"]
     assert set(resolved["process_verifiers"]["items"]["required"]) == {"name", "role", "command"}

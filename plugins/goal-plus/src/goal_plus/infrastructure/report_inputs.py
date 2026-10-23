@@ -235,6 +235,43 @@ def _report_iteration_payload(
     return payload
 
 
+
+def _collect_shared_knowledge(
+    root: Path, run_id: str, frozen: FrozenSpec, candidates: list[Any]
+) -> tuple[Any, dict[str, dict[str, Any]]]:
+    """Collect the shared knowledge view and outcome map for the report.
+
+    Returns (SharedKnowledgeView | None, outcome_by_record) — the caller
+    renders them together with Evidence entries in unified card format.
+    """
+    from goal_plus.domain.shared_knowledge import project_shared_knowledge
+    from goal_plus.infrastructure.state.shared_knowledge import (
+        FileSharedKnowledgeState,
+    )
+
+    if not frozen.spec.shared_knowledge.enabled:
+        return None, {}
+    records = FileSharedKnowledgeState(root).load_knowledge_records(run_id)
+    if not records:
+        return None, {}
+    view = project_shared_knowledge(records, frozen.spec.shared_knowledge)
+    settled = {
+        f"{candidate.candidate_id}:{iteration.iteration}": {
+            "iteration_ref": f"{candidate.candidate_id}:{iteration.iteration}",
+            "score": iteration.score,
+            "disposition": iteration.disposition,
+        }
+        for candidate in candidates
+        for iteration in candidate.iterations
+    }
+    outcomes = {
+        record.record_id: settled[record.evidence_ref]
+        for record in records
+        if record.evidence_ref in settled
+    }
+    return view, outcomes
+
+
 def _task_details(
     root: Path, task_summary: dict[str, Any], report_run_id: str
 ) -> dict[str, Any]:
@@ -246,6 +283,8 @@ def _task_details(
             "plans": [],
             "candidates": [],
             "sessions": [],
+            "shared_knowledge_view": None,
+            "knowledge_outcomes": {},
         }
     state = FileSearchRunState(root)
     run = state.read_run(run_id)
@@ -268,6 +307,9 @@ def _task_details(
         if related.parent_frozen_spec_id is not None:
             spec_ids.add(related.parent_frozen_spec_id)
     sessions = state.read_agent_sessions(run_id)
+    shared_knowledge_view, knowledge_outcomes = _collect_shared_knowledge(
+        root, run_id, frozen, candidates
+    )
     run_dir = state.run_dir(run_id)
     verifier_enabled = frozen.spec.strategy.requires_llm_verifier
     verifier_views = load_search_verifier_views(run_dir) if verifier_enabled else None
@@ -299,6 +341,8 @@ def _task_details(
             frozen,
             candidates,
         ),
+        shared_knowledge_view=shared_knowledge_view,
+        knowledge_outcomes=knowledge_outcomes,
     )
     result = task_details(inputs, task_summary, report_run_id)
     FileEvidenceAttachments(root).attach_external_evaluations(

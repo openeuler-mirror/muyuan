@@ -1,6 +1,6 @@
 """Bounded report inputs for one Search task, captured before rendering."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -61,6 +61,8 @@ class ReportTaskInputs:
     verifier_views: SearchVerifierViews | None
     iterations: dict[tuple[str, int], dict[str, Any]]
     reference_impacts: list[ReportReferenceImpact]
+    shared_knowledge_view: Any = None
+    knowledge_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
