@@ -1,0 +1,33 @@
+{
+  "name": "goal-plus",
+  "version": "0.1.0",
+  "description": "Durable Goal Plus orchestration and verifier-guided Search Mode for Codex.",
+  "author": {
+    "name": "Goal Plus contributors"
+  },
+  "keywords": [
+    "codex",
+    "agentic search",
+    "multi-agent",
+    "verification",
+    "optimization"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Goal Plus",
+    "shortDescription": "Durable goals and verifier-guided search",
+    "longDescription": "Run durable Codex goals, delegate bounded work, and upgrade measurable optimization tasks to isolated verifier-guided Search Mode.",
+    "developerName": "Goal Plus contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "$goal-plus Fix this bug and verify the test suite.",
+      "$goal-plus Optimize this implementation against a frozen verifier.",
+      "$goal-plus-with-final-check Complete this task with an independent audit."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

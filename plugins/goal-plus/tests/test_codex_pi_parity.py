@@ -1,0 +1,113 @@
+from pathlib import Path
+import re
+
+import pytest
+
+from goal_plus.infrastructure.host_bindings import execution_binding
+
+
+ROOT = Path(__file__).resolve().parents[1]
+pytestmark = [pytest.mark.codex, pytest.mark.pi]
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "marker"),
+    [
+        ("tests/test_codex_assets.py", "codex"),
+        ("tests/test_pi_assets.py", "pi"),
+        ("tests/test_pi_metrics.py", "pi"),
+        ("tests/test_pi_tool.py", "pi"),
+    ],
+)
+def test_host_specific_test_modules_declare_fast_marker(
+    relative_path: str,
+    marker: str,
+) -> None:
+    source = (ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert f"pytestmark = pytest.mark.{marker}" in source
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi_rpc"])
+def test_mixed_adapter_tests_mark_host_specific_cases(agent_harness: str) -> None:
+    source = (ROOT / "tests" / "test_agent_hosts.py").read_text(encoding="utf-8")
+    host_marker = "codex" if agent_harness == "codex" else "pi"
+    host_tests = re.findall(rf"def (test_{agent_harness}[^\(]+)", source)
+
+    assert host_tests
+    for test_name in host_tests:
+        definition = f"def {test_name}"
+        prefix = source[: source.index(definition)]
+        assert prefix.rstrip().endswith(f"@pytest.mark.{host_marker}"), test_name
+
+
+def test_codex_and_pi_publish_native_parity_capabilities() -> None:
+    codex = execution_binding("codex").capabilities
+    pi = execution_binding("pi").capabilities
+
+    assert codex.supports_model_override is True
+    assert codex.supports_reasoning_effort is True
+    assert codex.supports_service_tier is True
+    assert codex.supports_usage_metadata is True
+    assert codex.supported_workspace_providers == frozenset(
+        {"copy", "git_worktree"}
+    )
+
+    assert pi.supports_model_override is True
+    assert pi.supports_reasoning_effort is True
+    assert pi.supports_service_tier is False
+    assert pi.supports_usage_metadata is True
+    assert pi.supported_workspace_providers == frozenset({"copy", "git_worktree"})
+    assert codex.session_control == pi.session_control
+    assert codex.session_control.run_tool == "goal_plus_session_run"
+
+
+def test_codex_and_pi_share_role_model_command_interface() -> None:
+    codex = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
+    pi = (ROOT / "docs" / "pi.md").read_text(encoding="utf-8")
+    for text in (codex, pi):
+        assert "`main=`" in text
+        assert "annotator=" in text
+        assert "workers=" in text
+        assert "models=" in text
+        assert "strategy.evidence_annotator.model" in text
+        assert "strategy.models" in text
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "tests/test_runtime_unit.py",
+        "tests/test_models.py",
+        "tests/test_st_host_harness.py",
+    ],
+)
+def test_mixed_modules_mark_named_codex_and_pi_fast_tests(relative_path: str) -> None:
+    source = (ROOT / relative_path).read_text(encoding="utf-8")
+    host_tests = re.findall(r"def (test_[^\(]*(?:codex|pi_)[^\(]*)", source)
+
+    assert host_tests
+    for test_name in host_tests:
+        marker = "codex" if "codex" in test_name else "pi"
+        definition = f"def {test_name}"
+        prefix = source[: source.index(definition)]
+        assert prefix.rstrip().endswith(f"@pytest.mark.{marker}"), (
+            relative_path,
+            test_name,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "docs/codex.md",
+        "tests/README.md",
+        "tests/st/conftest.py",
+        "tests/st/hosts.py",
+        "tests/st/helpers/codex_runner.py",
+    ],
+)
+def test_codex_terra_path_uses_the_cli_model_slug(relative_path: str) -> None:
+    text = (ROOT / relative_path).read_text(encoding="utf-8").lower()
+
+    assert ("openai." + "gpt-5.6-terra") not in text

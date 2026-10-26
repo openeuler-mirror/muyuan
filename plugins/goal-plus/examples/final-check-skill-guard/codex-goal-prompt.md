@@ -1,0 +1,12 @@
+$goal-plus-with-final-check max_parallel=1 max_duration_seconds=1800 Optimize the batch scorer in this materialized repository and complete the task through independent final review.
+
+Use the checked-in `search-spec.json` as the authoritative Search contract, adapting only its host launch fields to Codex. Run one fixed candidate lane and keep the task-local Skill available in the candidate workspace. Allow up to thirty minutes for the complete task; reserve enough time for selection, promotion, two independent reviews, repair, and closeout.
+
+This example intentionally demonstrates rejection and retry. After accepting the promoted Search result, request the first FinalChecker before applying its patch or editing the source workspace. Do not predict, simulate, or submit the reviewer's verdict. If the reviewer rejects the delivery, address every finding in the source workspace, run every check required by the task-local Skill, and request a new FinalChecker. Finish only when `goal_plus_status` reports `complete`.
+
+Model selection: this prompt pins no model. Every subagent (candidate worker,
+Evidence annotator, and any other helper) leaves its model unspecified and
+inherits the main agent's current model.
+
+Cadence: once you have a plan, submit it to the verifier promptly; do not
+iterate internally for a long time without submitting.

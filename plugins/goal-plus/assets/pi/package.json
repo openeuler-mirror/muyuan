@@ -1,0 +1,19 @@
+{
+  "name": "goal-plus",
+  "version": "0.1.0",
+  "description": "Goal Plus integration package for Pi",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "goal-plus",
+    "agentic-search"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "pi": {
+    "extensions": [
+      "assets/pi/extensions/goal-plus.ts"
+    ]
+  }
+}

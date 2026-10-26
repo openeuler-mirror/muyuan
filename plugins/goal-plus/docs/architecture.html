@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Goal Plus · 架构图集</title>
+  <style>
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#202b33;background:#fff;font:16px/1.65 system-ui,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;letter-spacing:0}main{max-width:1440px;margin:auto;padding:32px 24px 64px}header{border-bottom:1px solid #d5dfe2;padding-bottom:22px}h1{font-size:32px;line-height:1.3;margin:6px 0 12px}p{margin:8px 0;color:#52636c}.status{color:#087b70;font-weight:650;font-size:14px}a{color:#087b70;text-underline-offset:4px}nav{display:flex;flex-wrap:wrap;gap:12px 28px;margin-top:18px}section{padding-top:28px;scroll-margin-top:16px}h2{font-size:21px;margin:0 0 10px}figure{margin:0;border-top:1px solid #e2e8eb;border-bottom:1px solid #e2e8eb;overflow-x:auto}img{display:block;width:100%;min-width:1120px;height:auto}footer{margin-top:36px;border-top:1px solid #d5dfe2;padding-top:20px;color:#52636c}a:focus-visible{outline:2px solid #087b70;outline-offset:4px}@media(max-width:640px){main{padding:20px 16px 40px}h1{font-size:27px}nav{gap:10px 20px}}@media print{main{padding:0}nav{display:none}section{break-before:page}figure{overflow:visible}img{min-width:0}header{border:0}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="status">职责、能力与持久化边界</div>
+      <h1>Goal Plus 架构</h1>
+      <p>业务规则、模块输入输出与宿主执行各有明确责任。系统合同见<a href="../SPEC.md">系统规格</a>，具体职责见<a href="architecture.md">架构导读</a>。</p>
+      <nav aria-label="图集导航">
+        <a href="#boundaries">01 职责边界</a><a href="#flow">02 完整流程</a><a href="#roles">03 角色接入</a><a href="#durability">04 恢复责任</a><a href="architecture.md#先认识这些名词">名词解释</a><a href="architecture.md">完整导读与不变量</a>
+      </nav>
+    </header>
+    <section id="boundaries">
+      <h2><a href="diagrams/01-boundaries.svg">01 / 职责边界与依赖方向</a></h2>
+      <figure><img src="diagrams/01-boundaries.svg" width="1400" height="1445" alt="框架分层：可信入口、Application、Domain、Ports、Execution、Infrastructure 和纯 Projections；底部附名词解释"></figure>
+    </section>
+    <section id="flow">
+      <h2><a href="diagrams/02-flow.svg">02 / 从用户目标到可审计的交付</a></h2>
+      <figure><img src="diagrams/02-flow.svg" width="1400" height="1665" alt="Goal 和 Search 主流程、独立硬结算、异步 Annotation 与 Adaptive、最终审查和报告；底部附名词解释"></figure>
+      <p>图底部合并展示交付责任，不代表通知、报告与清理同时触发；它们分别保留自己的终态 gate、pins 和持久化顺序。</p>
+    </section>
+    <section id="roles">
+      <h2><a href="diagrams/03-roles.svg">03 / 角色合同、有限能力与执行驱动</a></h2>
+      <figure><img src="diagrams/03-roles.svg" width="1400" height="1515" alt="四种业务角色经过可信能力装配，绑定各自支持的 Codex、Pi 或 ThinkThread 执行驱动；底部附名词解释"></figure>
+    </section>
+    <section id="durability">
+      <h2><a href="diagrams/04-durability.svg">04 / 独立 journal 与共用恢复协议</a></h2>
+      <figure><img src="diagrams/04-durability.svg" width="1400" height="1675" alt="Pool baseline 与 provider journal 分别持有状态，共用 TT request 观察和关闭；publication 先登记 intent 再执行并校验返回事实；底部附名词解释"></figure>
+      <p>快照物化与 source apply 分别拥有 intent。Request 关闭、snapshot 可清理、Child 静默和 Goal 获准恢复是不同结论。</p>
+    </section>
+    <footer>详细状态责任与 A/F/R/D 不变量见 <a href="architecture.md">完整导读</a>；支持组合与各宿主差异见 <a href="agent-host-adapters.md">Host Adapters</a>。</footer>
+  </main>
+</body>
+</html>

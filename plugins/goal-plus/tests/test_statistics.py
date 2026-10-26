@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from goal_plus.models import WorkspaceOperationTiming
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.projections.statistics import build_run_statistics
+
+from tests._runtime_helpers import make_project, spec_for
+
+
+def _observation(
+    *,
+    provider: str,
+    model: str,
+    terminal_state: str,
+    timed_out: bool,
+    duration: float,
+    input_tokens: int,
+    cached_tokens: int,
+    output_tokens: int,
+    cost: float,
+) -> dict[str, object]:
+    processed = input_tokens + cached_tokens + output_tokens
+    return {
+        "execution": {
+            "provider": provider,
+            "model": model,
+            "terminal_state": terminal_state,
+            "timed_out": timed_out,
+            "runner_failed": False,
+            "duration_seconds": duration,
+            "ended_at": None,
+            "time_to_first_token_ms": None,
+        },
+        "usage": {
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached_tokens,
+            "cache_write_tokens": 0,
+            "output_tokens": output_tokens,
+            "reasoning_output_tokens": None,
+            "total_tokens": input_tokens + output_tokens,
+            "processed_tokens": processed,
+            "cost_usd": cost,
+            "assistant_messages": 1,
+            "tool_calls": 1,
+            "tool_results": 1,
+        },
+    }
+
+
+def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec = spec_for(project, max_parallel=1)
+    spec.process_verifiers[0].name = "_check"
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    first = runtime.start_agent_session(run_id, task.candidate_id)
+    second = runtime.redispatch_candidate(run_id, task.candidate_id)
+    task.workspace.joinpath("initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=second.agent_session_id,
+        hypothesis="Record worker statistics",
+    )
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.promotion is not None
+    run.promotion = run.promotion.model_copy(
+        update={
+            "apply_timing": WorkspaceOperationTiming(
+                started_at="2026-01-01T00:00:00Z",
+                completed_at="2026-01-01T00:00:02.500000Z",
+                duration_seconds=2.5,
+                outcome="succeeded",
+            )
+        }
+    )
+    candidates = runtime.candidate_creation.state.read_candidates(run_id)
+    sessions = runtime.candidate_sessions.state.read_agent_sessions(run_id)
+    observations = {
+        first.agent_session_id: _observation(
+            provider="glm-proxy",
+            model="GLM-5.2",
+            terminal_state="timed_out",
+            timed_out=True,
+            duration=10.0,
+            input_tokens=0,
+            cached_tokens=0,
+            output_tokens=0,
+            cost=0.0,
+        ),
+        second.agent_session_id: _observation(
+            provider="openai-codex",
+            model="gpt-5.6-luna",
+            terminal_state="completed",
+            timed_out=False,
+            duration=5.0,
+            input_tokens=100,
+            cached_tokens=50,
+            output_tokens=20,
+            cost=0.25,
+        ),
+    }
+
+    first_snapshot = build_run_statistics(
+        run,
+        frozen,
+        candidates,
+        sessions,
+        observations,
+        baseline_score=-1.0,
+        target_score=0.0,
+        now_epoch=2_000_000_000.0,
+    )
+    later_snapshot = build_run_statistics(
+        run,
+        frozen,
+        candidates,
+        sessions,
+        observations,
+        baseline_score=-1.0,
+        target_score=0.0,
+        now_epoch=2_000_001_000.0,
+    )
+
+    assert first_snapshot["scores"]["target_reached"] is True
+    assert first_snapshot["schema_version"] == 2
+    assert first_snapshot["scores"]["best_improvement_from_baseline"] == 1.0
+    assert first_snapshot["workers"]["productive_sessions"] == 1
+    assert first_snapshot["workers"]["successful_sessions"] == 1
+    assert first_snapshot["workers"]["timed_out"] == 1
+    assert first_snapshot["workers"]["models"] == {
+        "GLM-5.2": 1,
+        "gpt-5.6-luna": 1,
+    }
+    assert first_snapshot["lineage"] == {
+        "root_candidates": 1,
+        "derived_candidates": 0,
+        "multi_parent_candidates": 0,
+        "lineage_edges": 0,
+        "max_depth": 0,
+        "cycles_detected": 0,
+    }
+    assert first_snapshot["activity"]["candidates_submitted"] == 1
+    assert first_snapshot["activity"]["candidates_completed_with_result"] == 1
+    assert first_snapshot["activity"]["results_total"] == 1
+    assert first_snapshot["activity"]["agent_resumes"] == 1
+    assert first_snapshot["activity"]["same_session_resumes"] == 0
+    assert first_snapshot["activity"]["redispatch_resumes"] == 1
+    assert first_snapshot["selection"]["worker_verified"] is True
+    assert first_snapshot["selection"]["parent_verified"] is False
+    assert first_snapshot["selection"]["survived"] is True
+    assert first_snapshot["timing"]["time_to_first_improvement_seconds"] is not None
+    assert first_snapshot["timing"]["time_to_threshold_seconds"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_total"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_mean"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_max"] is not None
+    assert first_snapshot["timing"]["workspace_creation_candidates_observed"] == 1
+    assert first_snapshot["timing"]["promotion_apply_seconds"] == 2.5
+    workspace_operations = first_snapshot["workspace_operations"]
+    assert workspace_operations["provider"] == "copy"
+    assert workspace_operations["promotion_mode"] == "artifact_only"
+    capacity = workspace_operations["capacity_estimate"]
+    assert capacity["worktree_nodes"] == 1
+    assert capacity["basis"] == "source_tree_copy"
+    assert capacity["checkout_bytes_per_node"] > 0
+    assert capacity["fits_available_space"] is True
+    assert workspace_operations["workspace_creation"]["attempts_observed"] == 1
+    assert workspace_operations["workspace_creation"]["succeeded"] == 1
+    assert workspace_operations["promotion_apply"] == {
+        "observed": True,
+        "outcome": "succeeded",
+        "duration_seconds": 2.5,
+    }
+    assert first_snapshot["verifiers"]["process_runs"] == 1
+    assert first_snapshot["verifiers"]["worker_process_runs"] == 1
+    assert first_snapshot["verifiers"]["parent_process_runs"] == 0
+    assert first_snapshot["verifiers"]["process_verifier_results"] == 1
+    assert first_snapshot["usage"]["processed_tokens"] == 170
+    assert first_snapshot["usage"]["cost_usd"] == 0.25
+    assert first_snapshot["run"]["age_seconds"] != later_snapshot["run"]["age_seconds"]
+    assert (
+        first_snapshot["run"]["observed_duration_seconds"]
+        == later_snapshot["run"]["observed_duration_seconds"]
+    )

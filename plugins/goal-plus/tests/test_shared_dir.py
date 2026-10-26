@@ -1,0 +1,1837 @@
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+import subprocess
+from typing import Any
+
+import pytest
+
+from goal_plus.evidence_annotator import (
+    EvidenceAnnotationResult,
+    ToolViewOutput,
+    drain_evidence_annotations,
+)
+from goal_plus.models import ScoreReport
+from goal_plus.domain.search_input import SearchSpecInput
+from goal_plus.monitor import goal_plus_monitor_snapshot
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.shared_dir import SharedDirManager
+from goal_plus.tools import SearchTools
+from tests._runtime_helpers import make_project, spec_for
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass(frozen=True)
+class CandidateSession:
+    candidate_id: str
+    agent_session_id: str
+    workspace: Path
+
+    @property
+    def share_out(self) -> Path:
+        return self.workspace / ".tmp" / "share-out"
+
+    @property
+    def tool_drafts(self) -> Path:
+        return self.workspace / ".tmp" / "tool-drafts"
+
+    def write_program_value(self, value: str | int | float) -> None:
+        (self.workspace / "initial_program.py").write_text(
+            f"VALUE = {value}\n",
+            encoding="utf-8",
+        )
+
+    def read_program(self) -> str:
+        return (self.workspace / "initial_program.py").read_text(encoding="utf-8")
+
+
+def _shared_run(
+    tmp_path: Path,
+    *,
+    enabled: bool = True,
+    max_files: int = 64,
+    max_bytes: int = 2 * 1024 * 1024,
+    max_tools: int = 16,
+    max_published_versions: int = 2,
+    max_path_entries: int = 512,
+    max_depth: int = 8,
+    extra_allowed_files: int = 0,
+) -> tuple[FileSearchRuntime, str, list[CandidateSession]]:
+    project = make_project(tmp_path)
+    for index in range(extra_allowed_files):
+        (project / f"extra_{index}.py").write_text(
+            f"VALUE_{index} = 0\n",
+            encoding="utf-8",
+        )
+    (project / "evaluator.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "value = Path('initial_program.py').read_text().split('=', 1)[1].strip()\n"
+        "print(json.dumps({'combined_score': float(value)}))\n",
+        encoding="utf-8",
+    )
+    data = spec_for(project, max_parallel=2).model_dump(mode="json", exclude_defaults=True)
+    data["edit_surface"]["allow"].extend(
+        f"extra_{index}.py" for index in range(extra_allowed_files)
+    )
+    data["workspace"] = {"provider": "git_worktree"}
+    data["shared_dir"] = {
+        "enabled": enabled,
+        "max_tools_per_iteration": max_tools,
+        "max_published_versions_per_family": max_published_versions,
+        "max_files_per_iteration": max_files,
+        "max_path_entries_per_iteration": max_path_entries,
+        "max_depth": max_depth,
+        "max_bytes_per_iteration": max_bytes,
+    }
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpecInput.model_validate(data).to_runtime_spec(),
+        [project / "evaluator.py"], agent_harness="codex",
+    )
+    assert frozen.spec.shared_dir.model_dump(exclude={"max_pending_revisions_per_family"}) == data["shared_dir"]
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
+    sessions: list[CandidateSession] = []
+    for task in tasks:
+        session = runtime.start_agent_session(run_id, task.candidate_id)
+        sessions.append(
+            CandidateSession(
+                candidate_id=task.candidate_id,
+                agent_session_id=session.agent_session_id,
+                workspace=task.workspace,
+            )
+        )
+    return runtime, run_id, sessions
+
+
+def _write_tool(share_out: Path, name: str = "score-helper") -> None:
+    tool = share_out / name
+    tool.mkdir(parents=True)
+    (tool / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "score-helper",
+                "summary": "Parse the toy score from a source file.",
+                "entrypoint": "helper.py:read_score",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tool / "helper.py").write_text(
+        "def read_score(text):\n    return float(text.split('=', 1)[1])\n",
+        encoding="utf-8",
+    )
+
+
+def _publish_pending_views(runtime: FileSearchRuntime, run_id: str) -> int:
+    class PublishingAnnotator:
+        def annotate(self, context):
+            return EvidenceAnnotationResult(
+                description="客观描述该次候选修改。",
+                usage={},
+                tool_views=[
+                    ToolViewOutput(
+                        tool_id=tool["tool_id"],
+                        summary="解析候选分数。",
+                        capabilities=["解析数值"],
+                        when_to_use="需要相同解析逻辑时。",
+                        entrypoint=tool["entrypoint"],
+                        inputs=["源码文本"],
+                        outputs=["数值"],
+                        dependencies=["Python 标准库"],
+                        adoption_steps=["复制并重新验证"],
+                        limitations=["不保证独立收益"],
+                    )
+                    for tool in context["published_tools"]
+                ],
+            )
+
+    return drain_evidence_annotations(
+        runtime.root_dir,
+        run_id,
+        annotator=PublishingAnnotator(),
+    )
+
+
+def _run_worker_verifier(
+    runtime: FileSearchRuntime,
+    run_id: str,
+    candidate: CandidateSession,
+    hypothesis: str,
+    **kwargs: Any,
+) -> ScoreReport:
+    return runtime.run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=candidate.agent_session_id,
+        hypothesis=hypothesis,
+        **kwargs,
+    )
+
+
+def _iterations(
+    runtime: FileSearchRuntime,
+    run_id: str,
+    candidate: CandidateSession,
+) -> list[dict[str, Any]]:
+    return runtime.list_iterations(run_id, candidate.candidate_id)
+
+
+def _shared_index(runtime: FileSearchRuntime, run_id: str) -> dict[str, Any]:
+    index_path = runtime.search_run.state.run_dir(run_id) / "shared" / "index.json"
+    return json.loads(index_path.read_text(encoding="utf-8"))
+
+
+def test_process_verifier_publishes_share_out_into_global_evidence(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, candidates = _shared_run(tmp_path)
+    producer, peer = candidates
+    producer_context = runtime.get_agent_context(producer.agent_session_id)
+    share_out = Path(producer_context["candidate_task"]["share_out_dir"])
+    shared_dir = runtime.search_run.state.run_dir(run_id) / "shared"
+
+    assert share_out == producer.share_out
+    assert "shared_dir" not in producer_context["candidate_task"]
+    assert (shared_dir / "index.json").is_file()
+    serialized_context = json.dumps(producer_context, ensure_ascii=False)
+    assert str(shared_dir) not in serialized_context
+    assert "shared/index.json" not in serialized_context
+
+    draft = producer.tool_drafts / "score-helper" / "helper.py"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(
+        "def read_score(text):\n    return float(text.split('=', 1)[1])\n",
+        encoding="utf-8",
+    )
+    staged = runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "score-helper",
+        "Parse the toy score from a source file.",
+        "score-helper/helper.py:read_score",
+        [".tmp/tool-drafts/score-helper"],
+    )
+    assert staged["files"] == ["manifest.json", "score-helper/helper.py"]
+    assert staged["staging_path"] == str(share_out / "score-helper")
+    producer.write_program_value(1)
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Raise the score and export a reusable parser",
+        toolization_decision={
+            "outcome": "staged",
+            "signals": ["parser_trace_or_comparator"],
+            "exclusion": None,
+            "rationale": "Encodes a non-trivial parser used during diagnosis.",
+            "tool_names": ["score-helper"],
+        },
+    )
+    assert report.process_passed is True
+    assert report.shared_tool_staged_entries == ["score-helper"]
+    assert report.shared_tool_staged_file_count == 2
+    assert report.shared_tool_publish_status == "published"
+    assert report.toolization_decision is not None
+    assert report.toolization_decision.signals == ["parser_trace_or_comparator"]
+    assert report.toolization_advisories == []
+    assert report.shared_tool_consumed_entries == ["score-helper"]
+    assert report.shared_tool_deduplicated_entries == []
+    assert list(share_out.iterdir()) == []
+
+    hidden = runtime.get_global_evidence(peer.agent_session_id)
+    assert hidden[0]["shared_tools"] == []
+    assert _publish_pending_views(runtime, run_id) == 1
+    evidence = runtime.get_global_evidence(peer.agent_session_id)
+    [tool] = evidence[0]["shared_tools"]
+    assert tool["candidate_id"] == producer.candidate_id
+    assert tool["iteration"] == 1
+    assert tool["source_commit"] == evidence[0]["commit"]
+    assert tool["name"] == "score-helper"
+    assert tool["entrypoint"] == "score-helper/helper.py:read_score"
+    assert tool["files"] == ["manifest.json", "score-helper/helper.py"]
+    assert "read_only_path" not in tool
+    snapshot = Path(
+        _iterations(runtime, run_id, producer)[0]["shared_tools"][0][
+            "read_only_path"
+        ]
+    )
+    assert snapshot.is_relative_to(shared_dir)
+    assert (snapshot / "score-helper" / "helper.py").is_file()
+
+    index = _shared_index(runtime, run_id)
+    assert index["schema_version"] == 2
+    assert [item["tool_id"] for item in index["tools"]] == [tool["tool_id"]]
+    assert index["families"] == [
+        {
+            "family_id": tool["family_id"],
+            "pending_head": None,
+            "discoverable_head": tool["tool_id"],
+            "created_at": index["families"][0]["created_at"],
+            "updated_at": index["families"][0]["updated_at"],
+        }
+    ]
+    iteration = _iterations(runtime, run_id, producer)[0]
+    assert iteration["shared_tools"][0]["snapshot_hash"] == tool["snapshot_hash"]
+    assert iteration["shared_tool_errors"] == []
+    assert iteration["shared_tool_staged_entries"] == ["score-helper"]
+    assert iteration["shared_tool_staged_file_count"] == 2
+    assert iteration["shared_tool_publish_status"] == "published"
+    assert iteration["toolization_decision"]["outcome"] == "staged"
+    assert "toolization_advisories" not in iteration
+    assert iteration["changed_files"] == ["initial_program.py"]
+    assert "toolization_decision" not in evidence[0]
+    assert "toolization_advisories" not in evidence[0]
+    monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    candidate_monitor = monitor["candidates"][producer.candidate_id]
+    assert candidate_monitor["shared_tools_published_total"] == 1
+    assert candidate_monitor["shared_tool_staged_file_count_last"] == 2
+    assert candidate_monitor["shared_tool_publish_status_last"] == "published"
+    assert candidate_monitor["shared_tool_publish_status_counts"] == {
+        "published": 1
+    }
+    assert candidate_monitor["toolization_outcome_counts"] == {"staged": 1}
+    assert candidate_monitor["toolization_signal_counts"] == {
+        "parser_trace_or_comparator": 1
+    }
+    assert candidate_monitor["toolization_advisory_counts"] == {}
+    family_monitor = monitor["run"]["shared_tool_families"]
+    assert family_monitor["family_count"] == 1
+    assert family_monitor["pending_count"] == 0
+    assert family_monitor["discoverable_count"] == 1
+    assert family_monitor["families"][0]["discoverable_version"] == 1
+
+
+def test_formal_regression_can_publish(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    draft = producer.tool_drafts / "test_reg.py"
+    draft.parent.mkdir(parents=True)
+    draft.write_text(
+        "from initial_program import VALUE\n\n"
+        "def test_candidate_regression():\n"
+        "    assert VALUE >= 1\n",
+        encoding="utf-8",
+    )
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "regression-check",
+        "Run the candidate-authored formal regression against a peer workspace.",
+        "test_reg.py",
+        [".tmp/tool-drafts/test_reg.py"],
+    )
+    producer.write_program_value(1)
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a passing candidate-authored formal regression test",
+        toolization_decision={
+            "outcome": "staged",
+            "signals": ["behavior_or_invariant_checker"],
+            "rationale": "The formal regression can check the same behavior in peers.",
+            "tool_names": ["regression-check"],
+        },
+    )
+
+    assert report.shared_tool_publish_status == "published"
+    published = _iterations(runtime, run_id, producer)[0]["shared_tools"][0]
+    assert published["files"] == [
+        "manifest.json",
+        "test_reg.py",
+    ]
+
+
+@pytest.mark.parametrize(
+    "exclusion",
+    [
+        "existing_family_sufficient",
+        "no_material_tool_delta",
+        "max_published_versions_reached",
+    ],
+)
+def test_first_toolization_review_rejects_revision_only_exclusions(
+    tmp_path: Path,
+    exclusion: str,
+) -> None:
+    runtime, run_id, [worker, _peer] = _shared_run(tmp_path)
+    worker.write_program_value(1)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"toolization exclusion '{exclusion}' requires an existing shared "
+            "tool family"
+        ),
+    ):
+        _run_worker_verifier(
+            runtime,
+            run_id,
+            worker,
+            "Incorrectly classify a first-publication review as a revision",
+            toolization_decision={
+                "outcome": "not_applicable",
+                "signals": [],
+                "exclusion": exclusion,
+                "rationale": "No revision was produced.",
+                "tool_names": [],
+            },
+        )
+
+    assert _iterations(runtime, run_id, worker) == []
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        worker,
+        "Record that the cumulative review found no tool",
+        toolization_decision={
+            "outcome": "not_applicable",
+            "signals": [],
+            "exclusion": "no_toolizable_material",
+            "rationale": "The cumulative review found no reusable tool material.",
+            "tool_names": [],
+        },
+    )
+    assert report.process_passed is True
+    assert report.toolization_decision is not None
+    assert report.toolization_decision.exclusion == "no_toolizable_material"
+
+
+def test_annotator_publishes_bound_tool_view_into_global_evidence(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    producer.write_program_value(1)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a parser for peer adoption",
+    )
+    before = runtime.get_global_evidence(peer.agent_session_id)
+    assert before[0]["shared_tools"] == []
+    [published] = _iterations(runtime, run_id, producer)[0]["shared_tools"]
+
+    class InspectingAnnotator:
+        def annotate(self, context):
+            [tool_input] = context["published_tools"]
+            assert tool_input["tool_id"] == published["tool_id"]
+            assert tool_input["snapshot_hash"] == published["snapshot_hash"]
+            assert tool_input["source_commit"] == before[0]["commit"]
+            assert tool_input["manifest"]["entrypoint"] == "helper.py:read_score"
+            assert tool_input["goal_evidence"]["disposition"] == "keep"
+            assert tool_input["goal_evidence"]["goal_effect"] == "unknown"
+            assert not any(
+                item.get("path") == "manifest.json" and "text" in item
+                for item in tool_input["snapshot_excerpts"]
+            )
+            assert any(
+                item.get("path") == "helper.py" and "read_score" in item.get("text", "")
+                for item in tool_input["snapshot_excerpts"]
+            )
+            return EvidenceAnnotationResult(
+                description="发布了一个解析候选分数的辅助工具。",
+                usage={"input_tokens": 10, "output_tokens": 5},
+                tool_views=[
+                    ToolViewOutput(
+                        tool_id=tool_input["tool_id"],
+                        summary="从候选源码文本中解析数值分数。",
+                        capabilities=["解析等号右侧的浮点数"],
+                        when_to_use="复用相同的文本分数格式时。",
+                        entrypoint="hallucinated.py:wrong_entrypoint",
+                        inputs=["包含 VALUE=<number> 的文本"],
+                        outputs=["浮点数"],
+                        dependencies=["Python 标准库"],
+                        adoption_steps=["复制 helper.py 到 allowed_files", "重新运行 verifier"],
+                        limitations=["只支持包含等号的文本"],
+                    )
+                ],
+            )
+
+    assert drain_evidence_annotations(
+        runtime.root_dir,
+        run_id,
+        annotator=InspectingAnnotator(),
+    ) == 1
+    after = runtime.get_global_evidence(peer.agent_session_id)
+    tool_view = after[0]["shared_tools"][0]["tool_view"]
+    assert tool_view["tool_id"] == published["tool_id"]
+    assert tool_view["snapshot_hash"] == published["snapshot_hash"]
+    assert tool_view["source_commit"] == before[0]["commit"]
+    assert tool_view["entrypoint"] == "helper.py:read_score"
+    assert tool_view["capabilities"] == ["解析等号右侧的浮点数"]
+    assert "不代表工具已被独立验证" in tool_view["evidence_scope"]
+    assert "evidence_summary" not in after[0]["shared_tools"][0]
+
+
+def test_annotator_rejects_tool_identity_mismatch(tmp_path: Path) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a parser with immutable identity",
+    )
+
+    class WrongIdentityAnnotator:
+        def annotate(self, _context):
+            return EvidenceAnnotationResult(
+                description="尝试描述一个错误工具身份。",
+                usage={"input_tokens": 3},
+                tool_views=[
+                    ToolViewOutput(
+                        tool_id="invented-tool-id",
+                        summary="错误身份。",
+                        capabilities=[],
+                        when_to_use="不适用。",
+                        entrypoint=None,
+                        inputs=[],
+                        outputs=[],
+                        dependencies=[],
+                        adoption_steps=[],
+                        limitations=["身份不匹配"],
+                    )
+                ],
+            )
+
+    assert drain_evidence_annotations(
+        runtime.root_dir,
+        run_id,
+        annotator=WrongIdentityAnnotator(),
+    ) == 0
+    annotation_task = runtime.annotation.task(
+        run_id, producer.candidate_id, 1
+    )
+    assert annotation_task is not None
+    assert annotation_task.state == "retry_wait"
+    assert annotation_task.usage == {"input_tokens": 3}
+    assert "identities do not match" in (annotation_task.last_error or "")
+    hidden = runtime.get_global_evidence(peer.agent_session_id)[0]
+    assert hidden["shared_tools"] == []
+
+
+def test_annotator_rejects_tampered_tool_snapshot(tmp_path: Path) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a hash-bound parser snapshot",
+    )
+    published = _iterations(runtime, run_id, producer)[0]["shared_tools"][0]
+    helper = Path(published["read_only_path"]) / "helper.py"
+    helper.chmod(0o666)
+    helper.write_text("def read_score(_text):\n    return 999.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="snapshot integrity mismatch"):
+        runtime.annotation_context.build(run_id, producer.candidate_id, 1)
+
+
+def test_tool_copy_requires_exact_discoverable_snapshot(tmp_path: Path) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a hash-bound helper",
+    )
+    [published_record] = _iterations(runtime, run_id, producer)[0]["shared_tools"]
+    with pytest.raises(ValueError, match="not discoverable before its Tool View"):
+        runtime.copy_shared_tool(
+            consumer.agent_session_id,
+            published_record["tool_id"],
+            published_record["snapshot_hash"],
+        )
+    assert _iterations(runtime, run_id, consumer) == []
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0][
+        "shared_tools"
+    ]
+    with pytest.raises(ValueError, match="snapshot_hash mismatch"):
+        runtime.copy_shared_tool(
+            consumer.agent_session_id,
+            published["tool_id"],
+            "incorrect-hash",
+        )
+    helper = Path(published_record["read_only_path"]) / "helper.py"
+    helper.chmod(0o666)
+    helper.write_text("def read_score(_text):\n    return 999.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="snapshot integrity mismatch"):
+        runtime.copy_shared_tool(
+            consumer.agent_session_id,
+            published["tool_id"],
+            published["snapshot_hash"],
+        )
+    assert _iterations(runtime, run_id, consumer) == []
+
+
+def test_copy_receipts_accumulate_keep_and_discard_for_all_loops(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    producer.write_program_value(2)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a score parser from a valid source iteration",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+
+    consumer.write_program_value(3)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Establish the consumer baseline",
+    )
+    first_receipt = runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+    assert Path(first_receipt["inbox_path"], "helper.py").is_file()
+    consumer.write_program_value(2)
+    discarded = _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Adapt the shared parser with a slower candidate path",
+    )
+    assert discarded.disposition == "discard"
+    discard_iteration = _iterations(runtime, run_id, consumer)[-1]
+    assert discard_iteration["adopted_tools"][0]["receipt_id"] == first_receipt[
+        "receipt_id"
+    ]
+    assert discard_iteration["adoption_confounded"] is False
+    assert not Path(first_receipt["inbox_path"]).exists()
+    assert consumer.read_program() == "VALUE = 3\n"
+
+    second_receipt = runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+    consumer.write_program_value(4)
+    kept = _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Adapt the shared parser with a faster candidate path",
+    )
+    assert kept.disposition == "keep"
+    keep_iteration = _iterations(runtime, run_id, consumer)[-1]
+    assert keep_iteration["adopted_tools"][0]["receipt_id"] == second_receipt[
+        "receipt_id"
+    ]
+    assert keep_iteration["adoption_confounded"] is False
+
+    class AdoptionAnnotator:
+        def annotate(self, context):
+            adoption = context["tool_adoptions"]
+            return EvidenceAnnotationResult(
+                description=(
+                    "客观描述该次候选修改和验证结果。"
+                    if not adoption
+                    else (
+                        f"采用 {adoption[0]['tool_id']} 后结算为 "
+                        f"{adoption[0]['disposition']}；候选分析已结合实际 diff 核对。"
+                    )
+                ),
+                usage={},
+                tool_views=[
+                    ToolViewOutput(
+                        tool_id=tool["tool_id"],
+                        summary="解析候选分数。",
+                        capabilities=["解析数值"],
+                        when_to_use="需要相同解析逻辑时。",
+                        entrypoint=tool["entrypoint"],
+                        inputs=["源码文本"],
+                        outputs=["数值"],
+                        dependencies=["Python 标准库"],
+                        adoption_steps=["复制并重新验证"],
+                        limitations=["不保证独立收益"],
+                    )
+                    for tool in context["published_tools"]
+                ],
+            )
+
+    assert drain_evidence_annotations(
+        runtime.root_dir,
+        run_id,
+        annotator=AdoptionAnnotator(),
+    ) == 3
+    global_evidence = runtime.get_global_evidence(producer.agent_session_id)
+    adoption_views = [
+        entry["view"]
+        for entry in global_evidence
+        if entry["candidate_id"] == consumer.candidate_id
+        and "采用 " in entry["view"]
+    ]
+    assert any("discard" in view for view in adoption_views)
+    assert any("keep" in view for view in adoption_views)
+    assert "evidence_summary" not in global_evidence[0]["shared_tools"][0]
+
+
+def test_confounded_adoption_is_recorded_in_evidence_projection(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(
+        tmp_path,
+        extra_allowed_files=5,
+    )
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a small tool",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+    consumer.write_program_value(1)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Establish a consumer baseline",
+    )
+    consumer.write_program_value(2)
+    for index in range(5):
+        (consumer.workspace / f"extra_{index}.py").write_text(
+            f"VALUE_{index} = 1\n",
+            encoding="utf-8",
+        )
+    runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Mix one tool adoption with a broad unrelated rewrite",
+    )
+    assert report.disposition == "keep"
+    assert _iterations(runtime, run_id, consumer)[-1]["adoption_confounded"] is True
+    source_tool = runtime.get_global_evidence(producer.agent_session_id)[0][
+        "shared_tools"
+    ][0]
+    assert "evidence_summary" not in source_tool
+
+
+def test_multiple_tool_adoption_is_confounded(tmp_path: Path) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out, "first-tool")
+    _write_tool(producer.share_out, "second-tool")
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish two independent helpers",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    published = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+    consumer.write_program_value(1)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Establish a consumer baseline",
+    )
+    consumer.write_program_value(2)
+    for tool in published:
+        runtime.copy_shared_tool(
+            consumer.agent_session_id,
+            tool["tool_id"],
+            tool["snapshot_hash"],
+        )
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Adopt two shared helpers in one combined trial",
+    )
+    assert report.disposition == "keep"
+    iteration = _iterations(runtime, run_id, consumer)[-1]
+    assert len(iteration["adopted_tools"]) == 2
+    assert iteration["adoption_confounded"] is True
+    source_tools = runtime.get_global_evidence(producer.agent_session_id)[0]["shared_tools"]
+    assert all("evidence_summary" not in tool for tool in source_tools)
+
+
+def test_adoption_without_candidate_changes_is_confounded(tmp_path: Path) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a helper for an isolated no-change trial",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Establish the unchanged consumer baseline",
+    )
+    runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        consumer,
+        "Declare adoption without integrating candidate files",
+    )
+
+    assert report.disposition == "retain"
+    iteration = _iterations(runtime, run_id, consumer)[-1]
+    assert iteration["adoption_confounded"] is True
+    assert iteration["attempt_changed_files"] == []
+
+
+def test_copy_limit_is_checked_before_tool_resolution(tmp_path: Path) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path, max_tools=1)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish one helper",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+    runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+
+    with pytest.raises(ValueError, match="pending tool copies exceed"):
+        runtime.copy_shared_tool(consumer.agent_session_id, "unknown", "incorrect")
+    assert _iterations(runtime, run_id, consumer) == []
+
+
+def test_valid_non_improving_iteration_can_still_share_an_tool(tmp_path: Path) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    producer.write_program_value(2)
+    first = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Establish the candidate best before sharing",
+    )
+    assert first.disposition == "keep"
+
+    _write_tool(producer.share_out)
+    producer.write_program_value(1)
+    second = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Export a reusable parser from a valid lower-scoring attempt",
+    )
+    assert second.disposition == "discard"
+
+    hidden = runtime.get_global_evidence(peer.agent_session_id)
+    assert all(not item["shared_tools"] for item in hidden)
+    assert _publish_pending_views(runtime, run_id) == 2
+    evidence = runtime.get_global_evidence(peer.agent_session_id)
+    assert evidence[-1]["disposition"] == "discard"
+    assert len(evidence[-1]["shared_tools"]) == 1
+    assert "evidence_summary" not in evidence[-1]["shared_tools"][0]
+    assert producer.read_program() == "VALUE = 2\n"
+
+
+def test_failed_process_verifier_does_not_publish_tools(tmp_path: Path) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    producer.write_program_value("not-a-number")
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Try an invalid score while an tool is staged",
+    )
+    assert report.process_passed is False
+    evidence = runtime.get_global_evidence(peer.agent_session_id)
+    assert evidence[0]["shared_tools"] == []
+    assert _shared_index(runtime, run_id)["tools"] == []
+    [iteration] = _iterations(runtime, run_id, producer)
+    assert iteration["shared_tool_staged_entries"] == ["score-helper"]
+    assert iteration["shared_tool_publish_status"] == "skipped_failed_verifier"
+
+
+def test_parent_fallback_records_staging_without_publishing(tmp_path: Path) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    report = runtime.run_verifier(run_id, producer.candidate_id)
+
+    assert report.process_passed is True
+    [iteration] = _iterations(runtime, run_id, producer)
+    assert iteration["agent_session_id"] is None
+    assert iteration["shared_tool_staged_entries"] == ["score-helper"]
+    assert iteration["shared_tool_publish_status"] == (
+        "skipped_unattributed_verifier"
+    )
+    assert runtime.get_global_evidence(peer.agent_session_id) == []
+    assert _shared_index(runtime, run_id)["tools"] == []
+    assert not list(
+        (runtime.search_run.state.run_dir(run_id) / "shared" / "tools").rglob("helper.py")
+    )
+
+
+def test_parent_fallback_cannot_bypass_pending_tool_copy_receipt(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a helper for an attributed adoption",
+    )
+    assert _publish_pending_views(runtime, run_id) == 1
+    [published] = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"]
+    receipt = runtime.copy_shared_tool(
+        consumer.agent_session_id,
+        published["tool_id"],
+        published["snapshot_hash"],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="parent process verifier cannot settle.*pending tool copies",
+    ):
+        runtime.run_verifier(run_id, consumer.candidate_id)
+
+    assert Path(receipt["inbox_path"]).is_dir()
+    consumer_record = runtime.candidate_creation.state.read_candidate(run_id, consumer.candidate_id)
+    assert [item.receipt_id for item in consumer_record.pending_tool_copies] == [
+        receipt["receipt_id"]
+    ]
+    assert _iterations(runtime, run_id, consumer) == []
+    assert runtime.status(run_id).state == "waiting_for_workers"
+
+
+def test_empty_staging_is_reported_as_not_staged(tmp_path: Path) -> None:
+    runtime, run_id, [worker, parent] = _shared_run(tmp_path)
+
+    parent_report = runtime.run_verifier(run_id, parent.candidate_id)
+    assert parent_report.shared_tool_staged_entries == []
+    assert parent_report.shared_tool_publish_status == "not_staged"
+
+    worker.write_program_value("not-a-number")
+    worker_report = _run_worker_verifier(
+        runtime,
+        run_id,
+        worker,
+        "Fail without staging a shared tool",
+    )
+    assert worker_report.process_passed is False
+    assert worker_report.shared_tool_staged_entries == []
+    assert worker_report.shared_tool_publish_status == "not_staged"
+    assert worker_report.toolization_advisories == ["toolization_review_missing"]
+
+
+def test_toolization_advisories_are_observational_only(tmp_path: Path) -> None:
+    runtime, run_id, [first, second] = _shared_run(tmp_path)
+
+    first.write_program_value(1)
+    missing_stage = _run_worker_verifier(
+        runtime,
+        run_id,
+        first,
+        "Record a positive toolization signal without staging",
+        toolization_decision={
+            "outcome": "staged",
+            "signals": ["repeated_workflow"],
+            "rationale": "A multi-step workflow was repeated.",
+            "tool_names": ["workflow-helper"],
+        },
+    )
+    assert missing_stage.aggregate_score == 1.0
+    assert missing_stage.disposition == "keep"
+    assert missing_stage.toolization_advisories == ["toolization_stage_missing"]
+
+    _write_tool(second.share_out)
+    second.write_program_value(1)
+    mismatch = _run_worker_verifier(
+        runtime,
+        run_id,
+        second,
+        "Stage content while declaring a concrete exclusion",
+        toolization_decision={
+            "outcome": "not_applicable",
+            "signals": [],
+            "exclusion": "single_common_command",
+            "rationale": "Only an ordinary command was considered reusable.",
+            "tool_names": [],
+        },
+    )
+    assert mismatch.aggregate_score == 1.0
+    assert mismatch.disposition == "keep"
+    assert mismatch.shared_tool_publish_status == "published"
+    assert mismatch.toolization_advisories == ["toolization_decision_mismatch"]
+
+    monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    assert monitor["candidates"][first.candidate_id]["toolization_advisory_counts"] == {
+        "toolization_stage_missing": 1
+    }
+    assert monitor["candidates"][second.candidate_id]["toolization_exclusion_counts"] == {
+        "single_common_command": 1
+    }
+    assert monitor["candidates"][second.candidate_id]["toolization_advisory_counts"] == {
+        "toolization_decision_mismatch": 1
+    }
+
+
+def test_stage_shared_tool_rejects_sources_outside_draft_root(tmp_path: Path) -> None:
+    runtime, _run_id, [producer, _peer] = _shared_run(tmp_path)
+    draft = producer.tool_drafts / "helper.py"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("print('ok')\n", encoding="utf-8")
+    outside = producer.workspace / "initial_program.py"
+
+    with pytest.raises(ValueError, match="must be under .tmp/tool-drafts"):
+        runtime.stage_shared_tool(
+            producer.agent_session_id,
+            "unsafe-helper",
+            "Attempt to export a candidate artifact.",
+            "initial_program.py",
+            [str(outside.relative_to(producer.workspace)).replace("\\", "/")],
+        )
+    with pytest.raises(ValueError, match="without '..'"):
+        runtime.stage_shared_tool(
+            producer.agent_session_id,
+            "escaping-helper",
+            "Attempt to traverse outside drafts.",
+            "helper.py",
+            [".tmp/tool-drafts/../tool-drafts/helper.py"],
+        )
+    with pytest.raises(ValueError, match="candidate-relative POSIX path"):
+        runtime.stage_shared_tool(
+            producer.agent_session_id,
+            "absolute-entrypoint",
+            "Attempt to retain a host-specific entrypoint.",
+            "C:/host/private.py:main",
+            [".tmp/tool-drafts/helper.py"],
+        )
+
+    assert list(producer.share_out.iterdir()) == []
+
+
+def test_stage_shared_tool_stops_scanning_when_draft_limit_is_reached(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    draft = workspace / ".tmp" / "tool-drafts" / "bundle"
+    draft.mkdir(parents=True)
+    for name in ["entry.py", "extra.py", "unread.py"]:
+        (draft / name).write_text(f"# {name}\n", encoding="utf-8")
+
+    original_scandir = os.scandir
+    scanned_entries = 0
+
+    class GuardedScandir:
+        def __init__(self, path: Path) -> None:
+            self._entries = original_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self._entries.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal scanned_entries
+            if scanned_entries >= 2:
+                raise AssertionError("draft scan continued after reaching the file limit")
+            scanned_entries += 1
+            return next(self._entries)
+
+    def guarded_scandir(path):
+        if Path(path) == draft:
+            return GuardedScandir(Path(path))
+        return original_scandir(path)
+
+    monkeypatch.setattr("goal_plus.shared_dir.os.scandir", guarded_scandir)
+    share_out = workspace / ".tmp" / "share-out"
+
+    with pytest.raises(ValueError, match="tool exceeds 2 files"):
+        SharedDirManager(tmp_path / "run").stage_tool(
+            workspace=workspace,
+            share_out_dir=share_out,
+            name="bounded-helper",
+            summary="Stop draft discovery at the configured limit.",
+            entrypoint="bundle/entry.py:main",
+            candidate_relative_source_paths=[".tmp/tool-drafts/bundle"],
+            max_tools=4,
+            max_files=2,
+            max_bytes=4096,
+            max_path_entries=16,
+            max_depth=4,
+        )
+
+    assert scanned_entries == 2
+    assert list(share_out.iterdir()) == []
+
+
+def test_shared_tool_limits_are_advisory_to_valid_verifier_evidence(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path, max_files=1)
+    share_out = producer.share_out
+    (share_out / "one.py").write_text("ONE = 1\n", encoding="utf-8")
+    (share_out / "two.py").write_text("TWO = 2\n", encoding="utf-8")
+    producer.write_program_value(1)
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish only tools within the configured bound",
+    )
+    assert report.process_passed is True
+    assert _publish_pending_views(runtime, run_id) == 1
+    [evidence] = runtime.get_global_evidence(peer.agent_session_id)
+    assert len(evidence["shared_tools"]) == 1
+
+
+def test_passing_settlement_consumes_staging_and_only_publishes_deltas(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    share_out = producer.share_out
+
+    _write_tool(share_out)
+    first = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish the first helper version",
+    )
+    assert first.shared_tool_publish_status == "published"
+    assert list(share_out.iterdir()) == []
+
+    _write_tool(share_out)
+    unchanged = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Restage an unchanged helper",
+    )
+    assert unchanged.shared_tool_publish_status == "consumed_unchanged"
+    assert unchanged.shared_tool_consumed_entries == ["score-helper"]
+    assert unchanged.shared_tool_deduplicated_entries == ["score-helper"]
+    assert list(share_out.iterdir()) == []
+
+    _write_tool(share_out)
+    (share_out / "score-helper" / "helper.py").write_text(
+        "def read_score(text):\n    return float(text.rsplit('=', 1)[1])\n",
+        encoding="utf-8",
+    )
+    [first_tool] = _iterations(runtime, run_id, producer)[0]["shared_tools"]
+    manifest = share_out / "score-helper" / "manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "publication_intent": "capability_extension",
+            "supersedes_tool_id": first_tool["tool_id"],
+            "capability_ids": ["parse-final-assignment"],
+            "coverage_keys": ["repeated-assignment"],
+        }
+    )
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    changed = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Publish a modified helper version",
+    )
+    assert changed.shared_tool_publish_status == "published"
+
+    assert _publish_pending_views(runtime, run_id) == 3
+    evidence = runtime.get_global_evidence(peer.agent_session_id)
+    assert [len(item["shared_tools"]) for item in evidence] == [0, 0, 1]
+    index = _shared_index(runtime, run_id)
+    assert len(index["tools"]) == 2
+    assert len({item["snapshot_hash"] for item in index["tools"]}) == 2
+
+
+def test_identical_content_from_peers_reuses_one_physical_snapshot(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [first, second] = _shared_run(tmp_path)
+    _write_tool(first.share_out)
+    _write_tool(second.share_out)
+
+    first_report = _run_worker_verifier(
+        runtime,
+        run_id,
+        first,
+        "Publish a reusable helper",
+    )
+    second_report = _run_worker_verifier(
+        runtime,
+        run_id,
+        second,
+        "Publish identical helper content from another lane",
+    )
+    assert first_report.shared_tool_publish_status == "published"
+    assert second_report.shared_tool_publish_status == "published"
+
+    iterations = [
+        _iterations(runtime, run_id, candidate)[0] for candidate in (first, second)
+    ]
+    paths = {
+        item["shared_tools"][0]["read_only_path"] for item in iterations
+    }
+    assert len(paths) == 1
+
+
+def test_family_revision_waits_for_tool_view_then_atomically_replaces_head(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish family v1")
+    assert _publish_pending_views(runtime, run_id) == 1
+    [v1] = runtime.get_global_evidence(peer.agent_session_id)[0]["shared_tools"]
+
+    draft = producer.tool_drafts / "score-helper" / "helper.py"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text(
+        "def read_score(text):\n    return float(text.rsplit('=', 1)[1])\n",
+        encoding="utf-8",
+    )
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "score-helper-v2",
+        "Parse the final score assignment.",
+        "score-helper/helper.py:read_score",
+        [".tmp/tool-drafts/score-helper/helper.py"],
+        publication_intent="capability_extension",
+        supersedes_tool_id=v1["tool_id"],
+        capability_ids=["parse-final-assignment"],
+        coverage_keys=["repeated-assignment"],
+    )
+    _run_worker_verifier(runtime, run_id, producer, "Publish family v2")
+    visible_while_pending = runtime.get_global_evidence(peer.agent_session_id)
+    assert [
+        tool["tool_id"]
+        for item in visible_while_pending
+        for tool in item["shared_tools"]
+    ] == [v1["tool_id"]]
+    catalog = runtime.get_agent_context(peer.agent_session_id)["tool_family_catalog"]
+    assert catalog[0]["discoverable_head"]["tool_id"] == v1["tool_id"]
+    assert catalog[0]["pending_head"]["version"] == 2
+    assert catalog[0]["revision_head"] == catalog[0]["pending_head"]
+    assert catalog[0]["published_version_count"] == 2
+    assert catalog[0]["max_published_versions_per_family"] == 2
+    assert catalog[0]["revision_allowed"] is False
+    assert catalog[0]["revision_blocker"] == "max_published_versions_reached"
+    assert catalog[0]["capability_ids"] == ["parse-final-assignment"]
+    assert catalog[0]["coverage_keys"] == ["repeated-assignment"]
+    assert "entrypoint" not in catalog[0]
+    assert "summary" not in catalog[0]
+
+    assert _publish_pending_views(runtime, run_id) == 1
+    visible = [
+        tool
+        for item in runtime.get_global_evidence(peer.agent_session_id)
+        for tool in item["shared_tools"]
+    ]
+    assert len(visible) == 1
+    assert visible[0]["family_id"] == v1["family_id"]
+    assert visible[0]["version"] == 2
+    assert visible[0]["supersedes_tool_id"] == v1["tool_id"]
+    with pytest.raises(ValueError, match="not the current discoverable family head"):
+        runtime.copy_shared_tool(
+            peer.agent_session_id,
+            v1["tool_id"],
+            v1["snapshot_hash"],
+        )
+
+    draft.write_text("VALUE = 3\n", encoding="utf-8")
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "score-helper-v3",
+        "Attempt a third family revision.",
+        "score-helper/helper.py:read_score",
+        [".tmp/tool-drafts/score-helper/helper.py"],
+        publication_intent="capability_extension",
+        supersedes_tool_id=visible[0]["tool_id"],
+        capability_ids=["parse-third-form"],
+        coverage_keys=["third-form"],
+    )
+    capped = _run_worker_verifier(runtime, run_id, producer, "Attempt family v3")
+    assert capped.shared_tool_publish_status == "snapshot_rejected"
+    assert "maximum published versions" in capped.shared_tool_errors[0]
+    still_visible = [
+        tool
+        for item in runtime.get_global_evidence(peer.agent_session_id)
+        for tool in item["shared_tools"]
+    ]
+    assert [tool["tool_id"] for tool in still_visible] == [visible[0]["tool_id"]]
+
+
+def test_family_catalog_is_built_from_shared_index(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish family v1")
+    assert _publish_pending_views(runtime, run_id) == 1
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
+    expected = manager.tool_family_catalog(
+        max_published_versions_per_family=2,
+    )
+
+    def fail_history_scan(_run_id: str):
+        raise AssertionError("family catalog must not scan candidate iteration history")
+
+    monkeypatch.setattr(runtime.shared_tools.source, "read_candidates", fail_history_scan)
+
+    assert runtime.shared_tools.catalog(run_id) == expected
+
+
+def test_family_governance_rejects_implicit_and_non_material_revisions(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish family v1")
+    assert _publish_pending_views(runtime, run_id) == 1
+    [v1] = runtime.get_global_evidence(peer.agent_session_id)[0]["shared_tools"]
+
+    _write_tool(producer.share_out)
+    (producer.share_out / "score-helper" / "helper.py").write_text(
+        "def read_score(text):\n    return float(text.strip().split('=', 1)[1])\n",
+        encoding="utf-8",
+    )
+    implicit = _run_worker_verifier(runtime, run_id, producer, "Restage an implicit update")
+    assert implicit.shared_tool_publish_status == "snapshot_rejected"
+    assert "existing_family_sufficient" in implicit.shared_tool_errors[0]
+
+    draft = producer.tool_drafts / "helper.py"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("VALUE = 2\n", encoding="utf-8")
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "helper-non-material",
+        "Rename the helper only.",
+        "helper.py",
+        [".tmp/tool-drafts/helper.py"],
+        publication_intent="capability_extension",
+        supersedes_tool_id=v1["tool_id"],
+    )
+    non_material = _run_worker_verifier(
+        runtime, run_id, producer, "Attempt a non-material revision"
+    )
+    assert non_material.shared_tool_publish_status == "snapshot_rejected"
+    assert "no_material_tool_delta" in non_material.shared_tool_errors[0]
+
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "helper-renamed-entrypoint",
+        "Rename the entrypoint only.",
+        "helper.py:renamed",
+        [".tmp/tool-drafts/helper.py"],
+        publication_intent="contract_change",
+        supersedes_tool_id=v1["tool_id"],
+    )
+    renamed = _run_worker_verifier(
+        runtime, run_id, producer, "Attempt an entrypoint-only rename"
+    )
+    assert renamed.shared_tool_publish_status == "snapshot_rejected"
+    assert any(
+        "changing only the entrypoint is not material" in error
+        for error in renamed.shared_tool_errors
+    )
+
+
+def test_newer_pending_revision_cancels_obsolete_tool_view_and_arbitrates_lanes(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [first, second] = _shared_run(
+        tmp_path,
+        max_published_versions=3,
+    )
+    _write_tool(first.share_out)
+    _run_worker_verifier(runtime, run_id, first, "Publish family v1")
+    assert _publish_pending_views(runtime, run_id) == 1
+    [v1] = runtime.get_global_evidence(second.agent_session_id)[0]["shared_tools"]
+
+    def stage_revision(candidate: CandidateSession, base: str, key: str) -> None:
+        draft = candidate.tool_drafts / "helper.py"
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text(f"VALUE = {key!r}\n", encoding="utf-8")
+        runtime.stage_shared_tool(
+            candidate.agent_session_id,
+            f"helper-{key}",
+            f"Revision {key}.",
+            "helper.py",
+            [".tmp/tool-drafts/helper.py"],
+            publication_intent="capability_extension",
+            supersedes_tool_id=base,
+            capability_ids=[key],
+            coverage_keys=[key],
+        )
+
+    stage_revision(first, v1["tool_id"], "v2")
+    _run_worker_verifier(runtime, run_id, first, "Publish pending v2")
+    [v2] = _iterations(runtime, run_id, first)[-1]["shared_tools"]
+    catalog = runtime.get_agent_context(second.agent_session_id)["tool_family_catalog"]
+    assert catalog[0]["revision_head"]["tool_id"] == v2["tool_id"]
+    assert catalog[0]["published_version_count"] == 2
+    assert catalog[0]["max_published_versions_per_family"] == 3
+    assert catalog[0]["revision_allowed"] is True
+    assert catalog[0]["revision_blocker"] is None
+    stage_revision(first, v2["tool_id"], "v3")
+    _run_worker_verifier(runtime, run_id, first, "Replace pending v2 with v3")
+    [v3] = _iterations(runtime, run_id, first)[-1]["shared_tools"]
+    catalog = runtime.get_agent_context(second.agent_session_id)["tool_family_catalog"]
+    assert catalog[0]["revision_head"]["tool_id"] == v3["tool_id"]
+    assert catalog[0]["published_version_count"] == 3
+    assert catalog[0]["revision_allowed"] is False
+    assert catalog[0]["capability_ids"] == ["v2", "v3"]
+    assert catalog[0]["coverage_keys"] == ["v2", "v3"]
+    v2_context = runtime.annotation_context.build(run_id, first.candidate_id, 2)
+    assert v2_context["published_tools"] == []
+
+    stage_revision(second, v2["tool_id"], "peer-v3")
+    rejected = _run_worker_verifier(runtime, run_id, second, "Race the current pending head")
+    assert rejected.shared_tool_publish_status == "snapshot_rejected"
+    assert "current family head" in rejected.shared_tool_errors[0]
+
+
+def test_terminal_tool_view_failure_keeps_previous_discoverable_head(
+    tmp_path: Path,
+) -> None:
+    from goal_plus.evidence_annotator import PermanentAnnotationError
+
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish family v1")
+    assert _publish_pending_views(runtime, run_id) == 1
+    [v1] = runtime.get_global_evidence(peer.agent_session_id)[0]["shared_tools"]
+
+    draft = producer.tool_drafts / "helper.py"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("VALUE = 2\n", encoding="utf-8")
+    runtime.stage_shared_tool(
+        producer.agent_session_id,
+        "helper-v2",
+        "Add a covered capability.",
+        "helper.py",
+        [".tmp/tool-drafts/helper.py"],
+        publication_intent="capability_extension",
+        supersedes_tool_id=v1["tool_id"],
+        capability_ids=["covered-v2"],
+        coverage_keys=["case-v2"],
+    )
+    _run_worker_verifier(runtime, run_id, producer, "Publish pending v2")
+
+    class FailingAnnotator:
+        def annotate(self, context):
+            if context["published_tools"]:
+                raise PermanentAnnotationError("schema validation failed")
+            return "普通 View"
+
+    drain_evidence_annotations(runtime.root_dir, run_id, annotator=FailingAnnotator())
+    visible = [
+        tool
+        for item in runtime.get_global_evidence(peer.agent_session_id)
+        for tool in item["shared_tools"]
+    ]
+    assert [tool["tool_id"] for tool in visible] == [v1["tool_id"]]
+    catalog = runtime.get_agent_context(peer.agent_session_id)["tool_family_catalog"]
+    assert catalog[0]["pending_head"] is None
+    assert catalog[0]["discoverable_head"]["tool_id"] == v1["tool_id"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_windows_share_out_junction_is_rejected_before_claim(tmp_path: Path) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    share_out = producer.share_out
+    outside = tmp_path / "outside-share-out"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("must remain\n", encoding="utf-8")
+    share_out.rmdir()
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(share_out), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"could not create test junction: {completed.stderr.strip()}")
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Reject a share-out junction before claiming staging",
+    )
+
+    assert report.process_passed is True
+    assert report.shared_tool_publish_status == "snapshot_rejected"
+    assert sentinel.read_text(encoding="utf-8") == "must remain\n"
+    assert share_out.exists()
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
+    with pytest.raises(ValueError, match="must be a real directory"):
+        manager.capture_staging(share_out, manager.pending_dir / "junction-test")
+    assert sentinel.read_text(encoding="utf-8") == "must remain\n"
+    assert share_out.exists()
+
+
+def test_depth_and_top_level_limits_stop_scanning_and_leave_staging_recoverable(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(
+        tmp_path,
+        max_tools=1,
+        max_depth=1,
+    )
+    share_out = producer.share_out
+    (share_out / "one.py").write_text("ONE = 1\n", encoding="utf-8")
+    (share_out / "two.py").write_text("TWO = 2\n", encoding="utf-8")
+    over_tools = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Exercise the top-level tool bound",
+    )
+    assert over_tools.process_passed is True
+    assert over_tools.shared_tool_publish_status == "snapshot_rejected"
+    assert sorted(path.name for path in share_out.iterdir()) == ["one.py", "two.py"]
+    assert "top-level tools" in over_tools.shared_tool_errors[0]
+
+    (share_out / "one.py").unlink()
+    (share_out / "two.py").unlink()
+    nested = share_out / "nested" / "level-one" / "level-two"
+    nested.mkdir(parents=True)
+    (nested / "deep.py").write_text("DEEP = 1\n", encoding="utf-8")
+    over_depth = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Exercise the recursive depth bound",
+    )
+    assert over_depth.process_passed is True
+    assert over_depth.shared_tool_publish_status == "snapshot_rejected"
+    assert (nested / "deep.py").is_file()
+    assert "maximum depth 1" in over_depth.shared_tool_errors[0]
+
+
+def test_path_entry_limit_stops_recursive_scan_and_restores_staging(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(
+        tmp_path,
+        max_path_entries=2,
+    )
+    share_out = producer.share_out
+    _write_tool(share_out)
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Exercise the filesystem entry traversal bound",
+    )
+    assert report.process_passed is True
+    assert report.shared_tool_publish_status == "snapshot_rejected"
+    assert "exceeds 2 filesystem entries" in report.shared_tool_errors[0]
+    assert (share_out / "score-helper" / "helper.py").is_file()
+
+
+def test_index_failure_replays_committed_tool_publication(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, peer] = _shared_run(tmp_path)
+    share_out = producer.share_out
+    _write_tool(share_out)
+
+    def fail_index_update(self, tools, **kwargs):
+        raise OSError("simulated index replace failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SharedDirManager, "_append_index", fail_index_update)
+        with pytest.raises(OSError, match="index replace failure"):
+            _run_worker_verifier(runtime, run_id, producer, "Publish helper")
+    record = runtime.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert len(record.iterations) == 1
+    tools = record.iterations[0].shared_tools
+    assert len(tools) == 1
+    assert record.verification is not None
+    assert _shared_index(runtime, run_id)["tools"] == []
+    restarted = FileSearchRuntime(runtime.root_dir)
+    for _ in range(2):
+        report = restarted.run_verifier(
+            run_id, producer.candidate_id,
+            attempt_id=record.score_report.attempt_id,
+        )
+        assert report.process_passed is True
+    settled = restarted.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert settled.iterations == record.iterations
+    assert settled.results_ledger == record.results_ledger
+    assert settled.verification is None
+    assert _shared_index(runtime, run_id)["tools"] == [tools[0].model_dump(mode="json")]
+    assert not (share_out / "score-helper").exists()
+
+
+def test_uncommitted_tool_input_is_retained_for_exact_attempt_retry(tmp_path, monkeypatch):
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    original_source = (producer.share_out / "score-helper" / "helper.py").read_text()
+    write_candidate = runtime.settlement.state.write_candidate
+
+    def interrupt_commit(run_id, record):
+        if record.iterations:
+            raise SystemExit("before settlement commit")
+        write_candidate(run_id, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.settlement.state, "write_candidate", interrupt_commit)
+        with pytest.raises(SystemExit, match="before settlement commit"):
+            _run_worker_verifier(runtime, run_id, producer, "Publish original helper")
+    record = runtime.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert record.iterations == []
+    assert _shared_index(runtime, run_id)["tools"] == []
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
+    snapshots = list(manager.tools_dir.glob("sha256/*/*"))
+    assert len(snapshots) == 1
+    _write_tool(producer.share_out)
+    later = producer.share_out / "score-helper" / "helper.py"
+    later.write_text("# next attempt\n")
+    restarted = FileSearchRuntime(runtime.root_dir)
+    report = restarted.run_verifier(
+        run_id, producer.candidate_id,
+        attempt_id=record.verification.attempt_id,
+    )
+    assert report.process_passed is True
+    settled = restarted.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert len(settled.iterations) == 1
+    tool = settled.iterations[0].shared_tools[0]
+    assert (tool.read_only_path / "helper.py").read_text() == original_source
+    assert list(manager.tools_dir.glob("sha256/*/*")) == snapshots
+    assert later.read_text() == "# next attempt\n"
+
+
+def test_committed_adoption_retries_inbox_cleanup(tmp_path, monkeypatch):
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish helper")
+    _publish_pending_views(runtime, run_id)
+    tool = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"][0]
+    runtime.copy_shared_tool(consumer.agent_session_id, tool["tool_id"], tool["snapshot_hash"])
+    before = runtime.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    receipt = before.pending_tool_copies[0]
+
+    def interrupt_cleanup(path):
+        raise OSError("inbox cleanup interrupted")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.shared_tools.publication, "remove_inbox", interrupt_cleanup)
+        with pytest.raises(OSError, match="inbox cleanup interrupted"):
+            _run_worker_verifier(runtime, run_id, consumer, "Read copied helper")
+    record = runtime.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    assert record.iterations[0].adopted_tools[0].receipt_id == receipt.receipt_id
+    restarted = FileSearchRuntime(runtime.root_dir)
+    for _ in range(2):
+        restarted.run_verifier(run_id, consumer.candidate_id,
+                               attempt_id=record.score_report.attempt_id)
+    settled = restarted.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    assert settled.pending_tool_copies == []
+    assert not receipt.inbox_path.exists()
+    assert settled.iterations == record.iterations
+    assert settled.results_ledger == record.results_ledger
+    _run_worker_verifier(restarted, run_id, consumer, "Next attempt after cleanup")
+
+
+def test_reconciliation_keeps_latest_equal_score_settlement(tmp_path):
+    runtime, run_id, [first, second] = _shared_run(tmp_path)
+    older = _run_worker_verifier(runtime, run_id, second, "Earlier equal score")
+    latest = _run_worker_verifier(runtime, run_id, first, "Later equal score")
+    assert runtime.status(run_id).best_candidate_id == first.candidate_id
+    runtime.run_verifier(run_id, second.candidate_id, attempt_id=older.attempt_id)
+    assert runtime.status(run_id).best_candidate_id == first.candidate_id
+    best = json.loads((runtime.search_run.state.run_dir(run_id) / "best.json").read_text())
+    assert best["artifact_ref"] == latest.attempt_artifact_ref.model_dump(mode="json")
+
+
+def test_failed_verifier_uses_only_cheap_staging_inventory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    share_out = producer.share_out
+    _write_tool(share_out)
+    producer.write_program_value("not-a-number")
+
+    def fail_if_scanned(*args, **kwargs):
+        raise AssertionError("recursive staging scan should not run")
+
+    monkeypatch.setattr(SharedDirManager, "_tool_files", fail_if_scanned)
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Fail validity before recursive shared-tool scanning",
+    )
+    assert report.process_passed is False
+    assert report.shared_tool_publish_status == "skipped_failed_verifier"
+    assert report.shared_tool_staged_entries == ["score-helper"]
+    assert report.shared_tool_staged_file_count == 0
+    assert (share_out / "score-helper" / "helper.py").is_file()
+
+
+def test_staging_inspection_failure_is_advisory_to_verifier_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+
+    def fail_inspection(self, share_out_dir, **kwargs):
+        raise OSError("diagnostic read failed")
+
+    monkeypatch.setattr(SharedDirManager, "inspect_staging", fail_inspection)
+
+    report = _run_worker_verifier(
+        runtime,
+        run_id,
+        producer,
+        "Settle valid verifier evidence despite diagnostic failure",
+    )
+
+    assert report.process_passed is True
+    assert report.shared_tool_publish_status == "snapshot_error"
+    assert report.shared_tool_errors is not None
+    assert "diagnostic read failed" in report.shared_tool_errors[0]
+    [iteration] = _iterations(runtime, run_id, producer)
+    assert iteration["shared_tool_publish_status"] == "snapshot_error"
+    assert runtime.status(run_id).state != "failed"
+
+
+def test_disabled_shared_dir_omits_tools_and_storage(tmp_path: Path) -> None:
+    runtime, run_id, [candidate, _peer] = _shared_run(tmp_path, enabled=False)
+    context = runtime.get_agent_context(candidate.agent_session_id)
+    task = context["candidate_task"]
+    assert "share_out_dir" not in task
+    assert "shared_dir" not in task
+    assert not (runtime.search_run.state.run_dir(run_id) / "shared").exists()
+
+    shared_dir = runtime.search_run.state.run_dir(run_id) / "shared"
+    shared_dir.mkdir(parents=True)
+    (shared_dir / "index.json").write_text("{invalid", encoding="utf-8")
+    assert "tool_family_catalog" not in runtime.get_agent_context(
+        candidate.agent_session_id
+    )
+
+    candidate_before = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
+    with pytest.raises(ValueError, match="shared_dir.enabled=true"):
+        runtime.stage_shared_tool(
+            candidate.agent_session_id,
+            name="disabled-probe",
+            summary="must not stage while sharing is disabled",
+            entrypoint="probe.py",
+            candidate_relative_source_paths=["initial_program.py"],
+        )
+    with pytest.raises(ValueError, match="shared_dir.enabled=true"):
+        runtime.copy_shared_tool(
+            candidate.agent_session_id,
+            tool_id="tool_from_disabled_catalog",
+            snapshot_hash="0" * 64,
+        )
+    assert (
+        runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
+        == candidate_before
+    )
+
+    candidate.write_program_value(1)
+    report = SearchTools(runtime).goal_plus_search_run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=candidate.agent_session_id,
+        hypothesis="Verify without shared tooling",
+        toolization_decision={
+            "outcome": "not_applicable",
+            "signals": [],
+            "exclusion": None,
+            "rationale": "Shared tooling is disabled.",
+            "tool_names": [],
+        },
+    )
+    assert report["process_passed"] is True
+    assert "toolization_decision" not in report
+    [iteration] = _iterations(runtime, run_id, candidate)
+    assert "toolization_decision" not in iteration
+
+    with pytest.raises(ValueError, match="requires shared_dir.enabled=true"):
+        _run_worker_verifier(
+            runtime,
+            run_id,
+            candidate,
+            "Reject impossible shared-tool staging",
+            toolization_decision={
+            "outcome": "staged",
+            "signals": ["domain_construction_or_probe"],
+            "rationale": "Claim a staged tool while sharing is disabled.",
+            "tool_names": ["probe"],
+        },
+    )
+    assert len(_iterations(runtime, run_id, candidate)) == 1
+
+
+def test_disabled_shared_dir_verifier_skips_shared_tool_settlement(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, [candidate, _peer] = _shared_run(tmp_path, enabled=False)
+
+    def fail_shared_settlement(*args, **kwargs):
+        raise AssertionError("disabled shared-dir must not inspect or settle staging")
+
+    monkeypatch.setattr(SharedDirManager, "inspect_staging", fail_shared_settlement)
+    monkeypatch.setattr(SharedDirManager, "prepare_iteration", fail_shared_settlement)
+
+    report = _run_worker_verifier(runtime, run_id, candidate, "Verify without sharing")
+
+    assert report.process_passed is True
+    assert report.shared_tool_publish_status == "not_staged"
+    assert report.shared_tool_staged_entries == []
+    assert report.shared_tool_errors == []
+    assert report.toolization_advisories == []

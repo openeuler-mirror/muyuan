@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "goal-plus"
+dynamic = ["version"]
+description = "A host-neutral goal runtime with optional verifier-guided Search Mode."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastmcp>=4.0.3",
+  "jsonref>=1.1.0",
+  "plotly>=6.5,<7.0",
+  "pydantic>=2.0,<3.0",
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=7.3",
+  "pytest-xdist>=3.6,<4.0",
+]
+[project.scripts]
+goal-plus = "goal_plus.cli:main"
+goal-plus-codex-doctor = "goal_plus.codex_doctor:main"
+goal-plus-pi-tool = "goal_plus.pi_tool:main"
+goal-plus-evidence-annotator = "goal_plus.evidence_annotator:main"
+goal-plus-host-guardian = "goal_plus.host_scope:main"
+
+[tool.hatch.version]
+path = "src/goal_plus/_version.py"
+
+[tool.hatch.build]
+exclude = ["/assets/codex/skills"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"assets/goal-plus-instructions.txt" = "goal_plus/_plugin_root/assets/goal-plus-instructions.txt"
+"assets/thinkthread-session-rpc.ts" = "goal_plus/_plugin_root/assets/thinkthread-session-rpc.ts"
+"assets/codex/agents" = "goal_plus/_plugin_root/assets/codex/agents"
+"assets/codex/config.example.toml" = "goal_plus/_plugin_root/assets/codex/config.example.toml"
+"assets/codex/hooks.json" = "goal_plus/_plugin_root/assets/codex/hooks.json"
+"assets/codex/marketplace.json" = "goal_plus/_plugin_root/assets/codex/marketplace.json"
+"assets/codex/mcp.json" = "goal_plus/_plugin_root/assets/codex/mcp.json"
+"assets/codex/plugin.json" = "goal_plus/_plugin_root/assets/codex/plugin.json"
+"assets/codex/thinkthread-worker-bridge.mts" = "goal_plus/_plugin_root/assets/codex/thinkthread-worker-bridge.mts"
+"assets/pi/extensions" = "goal_plus/_plugin_root/assets/pi/extensions"
+"assets/pi/prompts" = "goal_plus/_plugin_root/assets/pi/prompts"
+"assets/pi/package.json" = "goal_plus/_plugin_root/assets/pi/package.json"
+"assets/pi/package-lock.json" = "goal_plus/_plugin_root/assets/pi/package-lock.json"

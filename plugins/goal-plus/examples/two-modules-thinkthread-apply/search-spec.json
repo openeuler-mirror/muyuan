@@ -1,0 +1,59 @@
+{
+  "objective": "Update both modules to their required values so the frozen verifier passes.",
+  "metric_name": "module_score",
+  "metric_direction": "maximize",
+  "source_path": ".",
+  "edit_surface": {
+    "allow": [
+      "modules/"
+    ],
+    "deny": [
+      "verify.py",
+      "search-spec.json",
+      ".two-modules-thinkthread-example"
+    ]
+  },
+  "budget": {
+    "max_parallel": 1
+  },
+  "process_verifiers": [
+    {
+      "name": "module_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        "verify.py"
+      ],
+      "timeout_seconds": 10
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "root_hypotheses": [
+    "module_a.py must be changed to VALUE = 7.",
+    "module_b.py must be changed to VALUE = 11."
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh",
+    "inner_agent": "common",
+    "global_evidence_mode": "manual"
+  },
+  "workspace": {
+    "provider": "thinkthread",
+    "promotion_mode": "apply"
+  },
+  "constraints": {
+    "success_threshold": 2,
+    "suggested_batch_size": 1,
+    "task_summary": "Edit both modules, submit one verifier attempt, then apply the exact passing snapshot to the Root."
+  }
+}

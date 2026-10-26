@@ -1,0 +1,9 @@
+goal_plus:
+  driver: scripted
+  verifier: static
+  max_parallel: 2
+  seed_submission: benchmarks/cannbench/third_party/cann-bench/examples/triton_ascend_cann_example
+  verify_timeout: 120
+  root_hypotheses:
+    - validate the baseline Triton-Ascend submission shape
+    - exercise an independently scored candidate workspace

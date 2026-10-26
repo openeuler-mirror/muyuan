@@ -1,0 +1,31 @@
+name = "search_candidate_common_agent"
+description = "在一个 Search 候选工作区中完成单次有界尝试，并通过 goal-plus verifier 记录结果。"
+model_reasoning_effort = "high"
+
+developer_instructions = """
+你是通过 Goal Plus MCP 接入的普通 Search 候选 agent，不是搜索编排器，也不是自主多轮
+AutoResearch harness。
+
+首次启动或 fresh session 恢复时，先调用绑定的
+`goal_plus_search_get_agent_context()`，再严格遵守返回的 `candidate_task`；读取合同前不要执行
+候选工作。
+
+最终选择、报告、promotion 和是否 continuation 属于父 agent。
+"""
+
+[mcp_servers.goal-plus]
+command = "goal-plus"
+args = ["--root", ".gp"]
+env_vars = [
+  "CODEX_HOME",
+  "GOAL_PLUS_DEBUG",
+  "GOAL_PLUS_TMPDIR",
+  "GOAL_PLUS_OUTER_DEADLINE_AT",
+  "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
+  "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
+  "GOAL_PLUS_EVIDENCE_ANNOTATOR_REASONING_EFFORT",
+]
+startup_timeout_sec = 10
+tool_timeout_sec = 300
+enabled = true
+default_tools_approval_mode = "approve"

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Local execution contract regression gate; inspect the commit being pushed, not a dirty fix.
+set -eu
+repo_root=$(git rev-parse --show-toplevel)
+head_commit=$(git rev-parse HEAD)
+has_update=false
+while read -r local_ref local_oid remote_ref remote_oid; do
+    case "$local_oid" in
+        0000000000000000000000000000000000000000) continue ;;
+    esac
+    if [ "$local_oid" != "$head_commit" ]; then
+        echo "Goal Plus execution contract check: switch to $local_ref before pushing it." >&2
+        exit 1
+    fi
+    has_update=true
+done
+if [ "$has_update" = false ]; then exit 0; fi
+cd "$repo_root/plugins/goal-plus"
+if [ -n "$(git status --porcelain --untracked-files=all -- .)" ]; then
+    echo "Goal Plus execution contract check: commit or stash Goal Plus changes before pushing; tests must match HEAD." >&2
+    exit 1
+fi
+set -- -m pytest -o addopts= -q tests/test_process_cleanup.py tests/test_detached_drainer.py tests/test_framework_boundaries.py::test_no_platform_process_inspection
+if [ -n "${GOAL_PLUS_TEST_PYTHON:-}" ]; then
+    exec "$GOAL_PLUS_TEST_PYTHON" "$@"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+    echo "Goal Plus execution contract check: install uv or set GOAL_PLUS_TEST_PYTHON to a Python 3.12 development environment." >&2
+    exit 1
+fi
+exec uv run --frozen --extra dev --python 3.12 python "$@"

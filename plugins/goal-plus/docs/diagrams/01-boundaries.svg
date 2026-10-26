@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1445" viewBox="0 0 1400 1445" role="img" aria-labelledby="title desc">
+  <title id="title">Goal Plus 架构：职责边界与依赖方向</title>
+  <desc id="desc">业务用例通过窄 Ports 访问状态和副作用。Host 拥有模型生命周期。Bootstrap 只装配，Domain 和 Projections 保持纯计算。</desc>
+  <defs>
+    <style>
+      text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:19px;letter-spacing:0}
+      .title{font-size:32px;font-weight:700}.sub{font-size:18px;fill:#596873}.heading{font-size:23px;font-weight:700}.small{font-size:17px}.tag{font-size:17px;fill:#087b70;font-weight:700}
+      .box{stroke-width:1.5;rx:6}.business{fill:#edf8f5;stroke:#70aea2}.pure{fill:#f1f5fd;stroke:#8ca6cd}.host{fill:#f9eff3;stroke:#bd899e}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.state{fill:#fff8e8;stroke:#c4a866}
+      .call{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#call)}.dep{fill:none;stroke:#677b92;stroke-width:2;stroke-dasharray:7 5;marker-end:url(#dep)}
+    </style>
+    <marker id="call" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#087b70"/></marker>
+    <marker id="dep" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#677b92"/></marker>
+  </defs>
+  <rect width="1400" height="1445" fill="#fff"/>
+  <text x="40" y="52" class="title">01 / 职责边界与依赖方向</text>
+  <text x="40" y="86" class="sub">GOAL PLUS · 框架职责与依赖方向 · 框内名称表示职责，不要求一框对应一个类或文件</text>
+  <path d="M42 116H100" class="call"/><text x="112" y="123" class="small">运行时请求 / 数据</text>
+  <path d="M350 116H408" class="dep"/><text x="420" y="123" class="small">源码依赖 / 实现合同</text>
+  <text x="1018" y="123" class="tag">A1–A5 / 架构不变量</text>
+
+  <rect x="40" y="151" width="1320" height="95" class="box neutral"/>
+  <text x="64" y="188" class="heading">Bootstrap / 可信装配端</text>
+  <text x="64" y="220">集中解析受支持组合，向每个消费者注入所需能力；不处理业务状态转换，也不把服务容器传入用例。</text>
+
+  <rect x="40" y="302" width="330" height="142" class="box host"/>
+  <text x="62" y="338" class="heading">可信入口 / 薄 facade</text>
+  <text x="62" y="372">Codex hook · Pi extension</text>
+  <text x="62" y="403">MCP / CLI · host/session 事实</text>
+  <text x="62" y="430" class="small">转换参数、采集身份、序列化结果</text>
+
+  <rect x="430" y="302" width="580" height="142" class="box business"/>
+  <text x="454" y="338" class="heading">Application / 确定性规则与状态 owner</text>
+  <text x="454" y="372">Goal · Search · Candidate · Settlement</text>
+  <text x="454" y="403">Annotation · Verifier · Selection · Allocation · Publication</text>
+  <text x="454" y="430" class="small">共享授权 / 前态 / 归属 gate；查询和报告使用各自窄输入</text>
+
+  <rect x="1070" y="302" width="290" height="142" class="box pure"/>
+  <text x="1092" y="338" class="heading">Projections / 纯投影</text>
+  <text x="1092" y="372">Context · Monitor · Report</text>
+  <text x="1092" y="403">已采集 DTO + 显式时钟</text>
+  <text x="1092" y="430" class="small">不读取文件或修复状态</text>
+
+  <path d="M370 370H430" class="call"/>
+  <path d="M1010 370H1070" class="call"/>
+  <text x="445" y="284" class="small">A1 · 各宿主共用业务 gate；Main 保留目标理解与策略判断</text>
+
+  <rect x="40" y="528" width="330" height="142" class="box pure"/>
+  <text x="62" y="564" class="heading">Domain / 纯规则与 schema</text>
+  <text x="62" y="598">ArtifactRef · 状态结构不变量</text>
+  <text x="62" y="629">预算 / 排序 / 版本化纯策略</text>
+  <text x="62" y="656" class="small">无 I/O、环境读取或隐式时间</text>
+
+  <rect x="430" y="528" width="580" height="142" class="box pure"/>
+  <text x="454" y="564" class="heading">Ports / 逐用例的输入、结果与能力</text>
+  <text x="454" y="598">窄 State · Workspace / Artifact · Verifier</text>
+  <text x="454" y="629">Publication intent / result · Host facts / launch 输入</text>
+  <text x="454" y="656" class="small">没有万能 Provider、任意 method/params 或完整 Runtime</text>
+
+  <path d="M720 444V528" class="call"/>
+  <text x="738" y="491" class="small">A2 · 业务操作明确</text>
+  <path d="M482 444V484H206V528" class="dep"/>
+  <path d="M430 604H370" class="dep"/>
+  <path d="M1360 372H1380V700H992V670" class="dep"/>
+  <text x="1068" y="539" class="small">A3 · 展示不授予执行权</text>
+  <text x="1068" y="571" class="small">Report 的终态 gate、输出、</text>
+  <text x="1068" y="601" class="small">cleanup 顺序归报告用例；</text>
+  <text x="1068" y="631" class="small">renderer 只生成展示内容。</text>
+
+  <rect x="40" y="793" width="370" height="167" class="box host"/>
+  <text x="62" y="831" class="heading">Execution / Host 拥有执行</text>
+  <text x="62" y="866">Scope · Process · Drainer</text>
+  <text x="62" y="897" class="small">Inference · TT Child / RPC / Request</text>
+  <text x="62" y="932" class="small">A4 · 不写领域文件；不决定硬分</text>
+
+  <rect x="450" y="793" width="600" height="167" class="box state"/>
+  <text x="474" y="831" class="heading">Infrastructure / 实现副作用和存储</text>
+  <text x="474" y="866">State adapter：原子写 / 锁；转换决定由状态 owner 给出</text>
+  <text x="474" y="897">Artifact / Verifier / Publication：Git、Copy、TT 的真能力</text>
+  <text x="474" y="932" class="small">A5 · SDK 编解码与执行结果在这里收口；协议机制可复用 Execution</text>
+
+  <rect x="1100" y="793" width="260" height="167" class="box neutral"/>
+  <text x="1122" y="831" class="heading">外部系统</text>
+  <text x="1122" y="866">文件 / Git / TT SDK</text>
+  <text x="1122" y="897">确定性 verifier 命令</text>
+  <text x="1122" y="932" class="small">模型宿主由 Execution 驱动</text>
+
+  <path d="M225 793V730H582V670" class="dep"/>
+  <text x="45" y="713" class="small">依赖 Ports；通过窄 callback 回到用例</text>
+  <path d="M750 793V670" class="dep"/>
+  <text x="770" y="758" class="small">实现 Ports；不选择业务转换</text>
+  <path d="M1050 875H1100" class="call"/>
+  <text x="40" y="1009" class="sub">运行调用可以经 Ports 到达 adapter；这不意味着 Application 可以 import adapter，或控制模型的 spawn / wait / kill。</text>
+  <style>.glossary text{font-size:17px}.glossary .term{font-size:19px;font-weight:700}.glossary .glossary-title{font-size:21px;font-weight:700}</style>
+  <g class="glossary" transform="translate(0 1040)">
+    <rect width="1400" height="405" fill="#f5f7f8"/>
+    <path d="M40 0H1360" stroke="#cbd6dc"/>
+    <text x="40" y="40" class="glossary-title">名词速查 / 本图中的职责含义</text>
+    <text x="40" y="82" class="term">Settlement · 正式结算 / 验证记账</text>
+    <text x="40" y="110">把本次验证与精确代码版本一起记入正式结果；失败也记。</text>
+    <text x="40" y="147" class="term">LLM Verifier · 局部质量评估</text>
+    <text x="40" y="175">对精确结算对象生成不可变质量或扩展指标；不执行分配。</text>
+    <text x="40" y="212" class="term">Allocation · 候选分配与替换</text>
+    <text x="40" y="240">重放快照和确定性策略，安排候选替换并准备新工作区。</text>
+    <text x="40" y="277" class="term">Publication · 结果交付</text>
+    <text x="40" y="305">把选定结果做成可交付产物；按合同验证后导出或授权应用。</text>
+    <text x="730" y="82" class="term">DTO · Data Transfer Object / 数据传递对象</text>
+    <text x="730" y="110">跨模块传递的具名数据，如请求身份、代码版本和验证结果。</text>
+    <text x="730" y="147" class="term">Ports · 能力接口（不是网络端口）</text>
+    <text x="730" y="175">声明业务能调用的有限操作；具体实现由 adapter 提供。</text>
+    <text x="730" y="212" class="term">Drainer · 后台队列驱动器</text>
+    <text x="730" y="240">后台驱动队列任务；业务 owner 决定领取、重试和完成规则。</text>
+    <text x="730" y="277" class="term">Binding · 角色与具体实现的绑定</text>
+    <text x="730" y="305">为角色选定执行驱动、模型配置与能力实现；不是永久授权。</text>
+    <text x="730" y="342" class="term">Capability · 角色获准使用的能力</text>
+    <text x="730" y="370">该角色允许使用的有限操作，如只读版本差异或提交验证。</text>
+    <text x="40" y="370" fill="#596873">R1 定义合同 → R2 装配能力 → R3 与业务 owner 核验每次执行。</text>
+  </g>
+</svg>

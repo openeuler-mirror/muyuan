@@ -1,0 +1,64 @@
+{
+  "objective": "Apply the best of two predeclared 26-circle packing implementations. Every settled candidate must receive a complete supplemental Annotation Artifact View. The retained ThinkThread annotator must inspect immutable target code and compare target and peer snapshots whenever a peer is present before selection.",
+  "metric_name": "sum_radii",
+  "metric_direction": "maximize",
+  "source_path": ".",
+  "edit_surface": {
+    "allow": [
+      "initial_program.py"
+    ],
+    "deny": [
+      ".goal-plus-verifiers/circle_packing_score.py",
+      ".circle-packing-thinkthread-example",
+      "candidate-hints/rectangular.py",
+      "candidate-hints/staggered.py",
+      "search-spec.json"
+    ]
+  },
+  "budget": {
+    "max_parallel": 2
+  },
+  "process_verifiers": [
+    {
+      "name": "circle_packing_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/circle_packing_score.py"
+      ],
+      "timeout_seconds": 30
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "root_hypotheses": [
+    "c001 starts from candidate-hints/rectangular.py and autonomously searches for improvements.",
+    "c002 starts from candidate-hints/staggered.py and autonomously searches for improvements."
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh",
+    "inner_agent": "autoresearch",
+    "evidence_annotator": {
+      "timeout_seconds": 900
+    },
+    "global_evidence_mode": "manual"
+  },
+  "workspace": {
+    "provider": "thinkthread",
+    "promotion_mode": "apply"
+  },
+  "constraints": {
+    "success_threshold": 2.2,
+    "suggested_batch_size": 2,
+    "task_summary": "Compare the fixed rectangular and staggered 26-circle packings, publish complete target/peer Artifact Views, and apply the higher exact-snapshot score."
+  }
+}

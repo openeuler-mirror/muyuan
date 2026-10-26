@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+
+HostKind = Literal["codex", "pi"]
+
+
+@dataclass(frozen=True)
+class StHost:
+    kind: HostKind
+    marker: str
+    display_name: str
+    binary: str
+    model_env: str
+    default_model: str | None = None
+
+
+HOSTS: dict[HostKind, StHost] = {
+    "codex": StHost(
+        kind="codex",
+        marker="st_codex",
+        display_name="Codex",
+        binary="codex",
+        model_env="ST_CODEX_MODEL",
+        default_model="gpt-5.6-terra",
+    ),
+    "pi": StHost(
+        kind="pi",
+        marker="st_pi_rpc",
+        display_name="Pi RPC",
+        binary="pi",
+        model_env="ST_PI_MODEL",
+    ),
+}
+
+HOST_BY_MARKER = {agent_harness.marker: agent_harness for agent_harness in HOSTS.values()}
+DEFAULT_ST_HOST: HostKind = "codex"
+ST_ACTIVE_ENV = "GOAL_PLUS_ST_ACTIVE"
+
+
+def st_host_from_marker_names(marker_names: list[str] | set[str]) -> HostKind:
+    host_markers = [name for name in marker_names if name in HOST_BY_MARKER]
+    if len(host_markers) > 1:
+        raise ValueError(f"multiple ST host markers are not allowed: {host_markers}")
+    if host_markers:
+        return HOST_BY_MARKER[host_markers[0]].kind
+    return DEFAULT_ST_HOST
+
+
+def st_model_for_host(agent_harness: HostKind) -> str | None:
+    config = HOSTS[agent_harness]
+    return os.environ.get(config.model_env) or config.default_model
+
+
+def _replace_path(target: Path) -> None:
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
+
+
+def _link_if_present(project_root: Path, source_root: Path, name: str) -> None:
+    source = source_root / name
+    if not source.exists():
+        return
+    target = project_root / name
+    _replace_path(target)
+    if target.exists():
+        return
+    target.symlink_to(source, target_is_directory=source.is_dir())
+
+
+def link_host_assets(project_root: Path, source_root: Path) -> None:
+    """Expose project-local host configs inside an isolated ST workdir."""
+    for name in (".codex", ".pi"):
+        _link_if_present(project_root, source_root, name)

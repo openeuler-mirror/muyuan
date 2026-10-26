@@ -1,0 +1,4 @@
+interface:
+  display_name: "Preserve Score Semantics"
+  short_description: "Guard scoring optimizations against semantic shortcuts"
+  default_prompt: "Use $preserve-score-semantics to audit this scoring optimization."

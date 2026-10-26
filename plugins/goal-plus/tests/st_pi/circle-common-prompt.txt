@@ -1,0 +1,22 @@
+/goal-plus max_parallel=2 max_duration_seconds=900 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common Complete one bounded Circle Packing search and apply the best valid result.
+
+Use `search-spec.json` as the evaluation contract, with `source_path="workspace"`,
+and `strategy.inner_agent="common"`. The source is the
+standalone Git repository at `workspace/`. Only `initial_program.py` may change.
+Keep the frozen verifier unchanged and do not use the network.
+
+Create exactly two candidates and dispatch each once. In each proposal, request
+one small change to the concentric-ring placement, immediately followed by one
+`goal_plus_search_run_verifier` call and a return. Candidate 1 should adjust the inner ring
+radius slightly; candidate 2 should adjust the outer ring radius slightly.
+These are bounded lifecycle checks: do not run parameter sweeps, replace the
+algorithm, or continue candidates. Keep each worker budget at 240 seconds and
+8 turns. Both candidates must submit real verifier Evidence.
+
+Select the best valid verified candidate, independently verify its publication,
+and apply it back to `workspace/`. Run
+`python .goal-plus-verifiers/circle_packing_score.py` from that source repository
+to check the applied result: exactly 26 non-overlapping circles in the unit square
+and a valid radius sum. Confirm the source Git worktree is clean, generate the
+terminal report, close the pool and complete the Goal. Reserve the remaining
+time after the two candidate results for publication and closeout.

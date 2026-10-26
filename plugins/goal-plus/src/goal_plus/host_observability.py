@@ -1,0 +1,788 @@
+from __future__ import annotations
+
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import re
+from typing import Any
+
+from goal_plus.projections.usage import normalize_pi_usage
+from goal_plus.codex_transcript import read_codex_session_meta
+from goal_plus.codex_pricing import (
+    CODEX_PRICING_AS_OF,
+    CODEX_PRICING_CATALOG,
+    estimate_codex_request_cost,
+)
+from goal_plus.domain.search import AgentSessionRecord
+
+
+from goal_plus.ports.observability import OBSERVABILITY_SCHEMA_VERSION
+CODEX_ACTIVITY_SCHEMA_VERSION = 1
+
+_CODEX_ACTIVITY_TOOL_CATEGORIES = {
+    "goal_plus_search_get_agent_context": "context",
+    "search_get_global_plan": "global_evidence",
+    "goal_plus_search_get_global_evidence": "global_evidence",
+    "goal_plus_search_get_evidence_detail": "global_evidence",
+    "search_submit_iteration_plan": "iteration_plan",
+    "goal_plus_search_run_verifier": "verifier",
+}
+_CODEX_ACTIVITY_TOOL_NAME_PATTERN = re.compile(
+    r"(?:^|__)"
+    r"("
+    + "|".join(
+        re.escape(name)
+        for name in sorted(_CODEX_ACTIVITY_TOOL_CATEGORIES, key=len, reverse=True)
+    )
+    + r")$"
+)
+_CODEX_ACTIVITY_EXEC_PATTERN = re.compile(
+    r"\btools\.[A-Za-z0-9_]*"
+    r"("
+    + "|".join(
+        re.escape(name)
+        for name in sorted(_CODEX_ACTIVITY_TOOL_CATEGORIES, key=len, reverse=True)
+    )
+    + r")\s*\("
+)
+_BEST_REMAINS_PATTERN = re.compile(
+    r"(?:\bbest\b.{0,60}\bremains?\b|\bremains?\b.{0,60}\b(?:cycles?|score)\b|"
+    r"最佳.{0,30}(?:仍|保持))",
+    re.IGNORECASE,
+)
+_CANNOT_CONTINUE_PATTERN = re.compile(
+    r"(?:\bcannot continue\b|\bcan['’]?t continue\b|\bunable to continue\b|"
+    r"\bno longer continue\b|无法继续|不能继续)",
+    re.IGNORECASE,
+)
+
+
+def _number(value: Any) -> int | float | None:
+    return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+
+
+def _timestamp_epoch(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def _pi_runtime_start_payload(
+    value: Any,
+    *,
+    error: Any = None,
+    default_host: str | None = None,
+) -> dict[str, Any]:
+    snapshot = value if isinstance(value, dict) else {}
+    return {
+        "source": "pi_session_entry" if snapshot else "unavailable",
+        "agent": _string(snapshot.get("agent")),
+        "agent_harness": _string(snapshot.get("agent_harness")) or default_host,
+        "mode": _string(snapshot.get("mode")),
+        "project_trusted": (
+            snapshot.get("project_trusted")
+            if isinstance(snapshot.get("project_trusted"), bool)
+            else None
+        ),
+        "active_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_tools"), list)
+            else []
+        ),
+        "active_builtin_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_builtin_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_builtin_tools"), list)
+            else []
+        ),
+        "active_non_builtin_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_non_builtin_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_non_builtin_tools"), list)
+            else []
+        ),
+        "pi_sandbox": _string(snapshot.get("pi_sandbox")),
+        "pi_builtin_tool_approval": _string(
+            snapshot.get("pi_builtin_tool_approval")
+        ),
+        "filesystem_access": _string(snapshot.get("filesystem_access")),
+        "network_access": _string(snapshot.get("network_access")),
+        "cwd": _string(snapshot.get("cwd")),
+        "captured_at": _string(snapshot.get("captured_at")),
+        "error": _string(error),
+    }
+
+
+def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
+    metadata = session.session_handle.metadata
+    timed_out = bool(metadata.get("timed_out"))
+    runner_failed = bool(metadata.get("runner_failed"))
+    terminal_state = _string(metadata.get("terminal_state"))
+    if runner_failed:
+        terminal_state = "failed"
+    elif timed_out:
+        terminal_state = "timed_out"
+    return {
+        "schema_version": OBSERVABILITY_SCHEMA_VERSION,
+        "agent_session_id": session.agent_session_id,
+        "run_id": session.run_id,
+        "candidate_id": session.candidate_id,
+        "agent_harness": session.agent_harness,
+        "runtime_provider": session.runtime_provider,
+        "source": "host_metadata",
+        "identity": {
+            "native_session_id": None,
+            "external_id": session.session_handle.external_id,
+            "nickname": session.session_handle.nickname,
+        },
+        "execution": {
+            "provider": _string(metadata.get("provider")),
+            "model": _string(metadata.get("model")),
+            "reasoning_effort": _string(metadata.get("reasoning_effort")),
+            "service_tier": _string(metadata.get("service_tier")),
+            "started_at": _string(metadata.get("started_at")) or session.created_at,
+            "ended_at": _string(metadata.get("ended_at")),
+            "duration_seconds": _number(metadata.get("duration_seconds")),
+            "wall_duration_seconds": None,
+            "time_to_first_token_ms": _number(metadata.get("time_to_first_token_ms")),
+            "turns_completed": None,
+            "terminal_state": terminal_state or "unknown",
+            "timed_out": timed_out,
+            "runner_failed": runner_failed,
+            "exit_code": _number(metadata.get("exit_code")),
+        },
+        "usage": {
+            "scope": "unavailable",
+            "input_tokens": None,
+            "cached_input_tokens": None,
+            "cache_write_tokens": None,
+            "output_tokens": None,
+            "reasoning_output_tokens": None,
+            "total_tokens": None,
+            "processed_tokens": None,
+            "cost_usd": None,
+            "assistant_messages": None,
+            "tool_calls": None,
+            "tool_results": None,
+        },
+        "context": {
+            "tokens": None,
+            "context_window": None,
+            "percent": None,
+            "source": "unknown",
+        },
+        "artifacts": {
+            "event_log": _string(metadata.get("event_log")),
+            "text_log": _string(metadata.get("text_log")),
+            "session_file": _string(metadata.get("session_file")),
+        },
+        "handoff": {
+            "present": isinstance(metadata.get("progress_handoff"), dict),
+            "source_path": (
+                metadata["progress_handoff"].get("source_path")
+                if isinstance(metadata.get("progress_handoff"), dict)
+                else None
+            ),
+            "error": _string(metadata.get("progress_handoff_error")),
+        },
+        "runtime_start": _pi_runtime_start_payload(
+            metadata.get("runtime_start"),
+            error=metadata.get("runtime_start_error"),
+            default_host=session.agent_harness,
+        ),
+        "errors": [],
+    }
+
+
+
+
+def collect_pi_observability(session: AgentSessionRecord) -> dict[str, Any]:
+    payload = _base_observability(session)
+    metadata = session.session_handle.metadata
+    metrics = metadata.get("pi_metrics")
+    if not isinstance(metrics, dict):
+        return payload
+
+    runtime_start = metrics.get("runtime_start")
+    if isinstance(runtime_start, dict):
+        payload["runtime_start"] = _pi_runtime_start_payload(
+            runtime_start,
+            error=metrics.get("runtime_start_error"),
+            default_host=session.agent_harness,
+        )
+
+    execution = payload["execution"]
+    execution.update(
+        {
+            "provider": _string(metrics.get("provider")) or execution["provider"],
+            "model": _string(metrics.get("model")) or execution["model"],
+            "reasoning_effort": (
+                _string(metrics.get("thinking_level")) or execution["reasoning_effort"]
+            ),
+            "started_at": _string(metrics.get("started_at")) or execution["started_at"],
+            "ended_at": _string(metrics.get("ended_at")) or execution["ended_at"],
+            "duration_seconds": (
+                _number(metrics.get("duration_seconds"))
+                if _number(metrics.get("duration_seconds")) is not None
+                else execution["duration_seconds"]
+            ),
+        }
+    )
+    if execution["terminal_state"] == "unknown" and execution["ended_at"]:
+        execution["terminal_state"] = "completed"
+
+    scope = _string(metrics.get("scope")) or "session_total"
+    payload["usage"] = normalize_pi_usage(metrics.get("usage_total"), scope=scope)
+    session_stats = metrics.get("session_stats")
+    if isinstance(session_stats, dict):
+        usage = payload["usage"]
+        assistant_messages = _number(session_stats.get("assistantMessages"))
+        usage["assistant_messages"] = (
+            assistant_messages
+            if assistant_messages is not None
+            else usage["assistant_messages"]
+        )
+        usage["tool_calls"] = _number(session_stats.get("toolCalls"))
+        usage["tool_results"] = _number(session_stats.get("toolResults"))
+        session_tokens = session_stats.get("tokens")
+        if isinstance(session_tokens, dict):
+            processed_tokens = _number(session_tokens.get("total"))
+            if processed_tokens is not None:
+                usage["processed_tokens"] = processed_tokens
+    context_usage = (
+        session_stats.get("contextUsage") if isinstance(session_stats, dict) else None
+    )
+    if isinstance(context_usage, dict):
+        payload["context"] = {
+            "tokens": _number(context_usage.get("tokens")),
+            "context_window": _number(context_usage.get("contextWindow")),
+            "percent": _number(context_usage.get("percent")),
+            "source": "pi_session_stats",
+        }
+    elif isinstance(session_stats, dict) and isinstance(session_stats.get("tokens"), dict):
+        tokens = session_stats["tokens"]
+        payload["context"] = {
+            "tokens": _number(tokens.get("total")),
+            "context_window": None,
+            "percent": None,
+            "source": "pi_session_tokens_total",
+        }
+    payload["source"] = "pi_metrics"
+    errors = metrics.get("errors")
+    if isinstance(errors, list):
+        payload["errors"] = [str(error) for error in errors]
+    return payload
+
+
+def _codex_sessions_root(codex_home: Path | None = None) -> Path:
+    if codex_home is not None:
+        base = codex_home.expanduser()
+    else:
+        base = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    return base if base.name == "sessions" else base / "sessions"
+
+
+def _codex_date_dirs(root: Path, created_at: str) -> list[Path]:
+    epoch = _timestamp_epoch(created_at)
+    if epoch is None:
+        return [root]
+    created = datetime.fromtimestamp(epoch, timezone.utc)
+    paths = []
+    for offset in (-1, 0, 1):
+        day = created + timedelta(days=offset)
+        candidate = root / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
+        if candidate.exists():
+            paths.append(candidate)
+    return paths or [root]
+
+
+def discover_codex_session_file(
+    session: AgentSessionRecord,
+    *,
+    codex_home: Path | None = None,
+) -> Path | None:
+    """Find the bound native Codex rollout without mutating runtime state."""
+    bound = _string(session.session_handle.metadata.get("session_file"))
+    if bound:
+        path = Path(bound).expanduser()
+        if path.is_file():
+            return path
+
+    expected_id = session.session_handle.external_id
+    if not expected_id:
+        return None
+    root = _codex_sessions_root(codex_home)
+    if not root.exists():
+        return None
+
+    best: tuple[float, Path] | None = None
+    created_epoch = _timestamp_epoch(session.created_at)
+    for directory in _codex_date_dirs(root, session.created_at):
+        try:
+            candidates = directory.rglob("*.jsonl")
+            for path in candidates:
+                meta = read_codex_session_meta(path)
+                if meta is None:
+                    continue
+                id_matches = bool(expected_id and meta.get("id") == expected_id)
+                if not id_matches:
+                    continue
+                mtime = path.stat().st_mtime
+                distance = abs(mtime - created_epoch) if created_epoch is not None else 0.0
+                if best is None or distance < best[0]:
+                    best = (distance, path)
+        except OSError:
+            continue
+    return best[1] if best is not None else None
+
+
+def _codex_usage(info: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    info = info if isinstance(info, dict) else {}
+    total = info.get("total_token_usage")
+    total = total if isinstance(total, dict) else {}
+    last = info.get("last_token_usage")
+    last = last if isinstance(last, dict) else {}
+    window = _number(info.get("model_context_window"))
+    context_tokens = _number(last.get("total_tokens"))
+    percent = None
+    if context_tokens is not None and window not in (None, 0):
+        percent = context_tokens * 100.0 / window
+    usage = {
+        "scope": "session_total",
+        "input_tokens": _number(total.get("input_tokens")),
+        "cached_input_tokens": _number(total.get("cached_input_tokens")),
+        "cache_write_tokens": _number(total.get("cache_write_input_tokens")),
+        "output_tokens": _number(total.get("output_tokens")),
+        "reasoning_output_tokens": _number(total.get("reasoning_output_tokens")),
+        "total_tokens": _number(total.get("total_tokens")),
+        "processed_tokens": _number(total.get("total_tokens")),
+        "cost_usd": None,
+        "assistant_messages": None,
+        "tool_calls": None,
+        "tool_results": None,
+    }
+    context = {
+        "tokens": context_tokens,
+        "context_window": window,
+        "percent": percent,
+        "source": "codex_last_token_usage",
+    }
+    return usage, context
+
+
+def _usage_delta(
+    current: dict[str, Any],
+    baseline: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = dict(current)
+    if baseline is not None:
+        for field in (
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+            "processed_tokens",
+        ):
+            current_value = _number(current.get(field))
+            baseline_value = _number(baseline.get(field))
+            result[field] = (
+                max(0, current_value - baseline_value)
+                if current_value is not None and baseline_value is not None
+                else current_value
+            )
+        result["scope"] = "window_delta"
+    return result
+
+
+def _codex_activity_tool(payload: dict[str, Any]) -> tuple[str | None, str]:
+    raw_name = payload.get("name")
+    raw_name = raw_name if isinstance(raw_name, str) else ""
+    raw_input = payload.get("input")
+    if not isinstance(raw_input, str):
+        raw_input = payload.get("arguments")
+    raw_input = raw_input if isinstance(raw_input, str) else ""
+    match = _CODEX_ACTIVITY_TOOL_NAME_PATTERN.search(raw_name)
+    if match is None and raw_name == "exec":
+        match = _CODEX_ACTIVITY_EXEC_PATTERN.search(raw_input)
+    if match is not None:
+        logical_name = match.group(1)
+        return logical_name, _CODEX_ACTIVITY_TOOL_CATEGORIES[logical_name]
+    if raw_name == "apply_patch":
+        return "apply_patch", "edit_capable"
+    return None, "other"
+
+
+def _codex_assistant_text(payload: dict[str, Any]) -> str | None:
+    if payload.get("type") != "message" or payload.get("role") != "assistant":
+        return None
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            text = item.get("content")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _codex_assistant_class(text: str) -> tuple[str, str]:
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return "empty", ""
+    if _CANNOT_CONTINUE_PATTERN.search(normalized):
+        return "cannot_continue", normalized.casefold()
+    if len(normalized) <= 240 and _BEST_REMAINS_PATTERN.search(normalized):
+        return "best_remains", normalized.casefold()
+    return "substantive", normalized.casefold()
+
+
+def _parse_codex_session(path: Path, *, since: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "session_id": None,
+        "nickname": None,
+        "model": None,
+        "reasoning_effort": None,
+        "service_tier": None,
+        "started_at": None,
+        "ended_at": None,
+        "duration_seconds": None,
+        "wall_duration_seconds": None,
+        "time_to_first_token_ms": None,
+        "turns_completed": 0,
+        "terminal_state": "unknown",
+        "usage": None,
+        "context": None,
+        "assistant_messages": 0,
+        "tool_calls": 0,
+        "tool_results": 0,
+        "activity": None,
+        "errors": [],
+    }
+    first_epoch: float | None = None
+    last_epoch: float | None = None
+    active_turns = 0
+    terminal_event: str | None = None
+    duration_ms = 0.0
+    malformed = 0
+    since_epoch = _timestamp_epoch(since)
+    baseline_usage: dict[str, Any] | None = None
+    observed_token_total: int | float | None = None
+    estimated_cost_usd = 0.0
+    priced_calls = 0
+    unpriced_calls = 0
+    priced_models: set[str] = set()
+    priced_service_tiers: set[str] = set()
+    activity_events: list[dict[str, Any]] = []
+    activity_tool_counts: Counter[str] = Counter()
+    activity_message_counts: Counter[str] = Counter()
+    seen_assistant_messages: set[str] = set()
+    try:
+        stream = path.open("r", encoding="utf-8")
+    except OSError as exc:
+        result["errors"] = [f"session_file: {type(exc).__name__}: {exc}"]
+        return result
+    with stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            timestamp = _string(event.get("timestamp"))
+            epoch = _timestamp_epoch(timestamp)
+            in_window = since_epoch is None or (
+                epoch is not None and epoch >= since_epoch
+            )
+            if epoch is not None and in_window:
+                first_epoch = epoch if first_epoch is None else min(first_epoch, epoch)
+                last_epoch = epoch if last_epoch is None else max(last_epoch, epoch)
+            event_type = event.get("type")
+            payload = event.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            if event_type == "session_meta":
+                result["session_id"] = _string(payload.get("id"))
+                result["nickname"] = _string(payload.get("agent_nickname"))
+                result["started_at"] = since or _string(payload.get("timestamp")) or timestamp
+            elif event_type == "turn_context":
+                active_turns += 1
+                result["model"] = _string(payload.get("model")) or result["model"]
+                result["reasoning_effort"] = (
+                    _string(payload.get("effort")) or result["reasoning_effort"]
+                )
+                result["service_tier"] = (
+                    _string(payload.get("service_tier")) or result["service_tier"]
+                )
+            elif event_type == "event_msg":
+                message_type = payload.get("type")
+                if message_type == "token_count":
+                    info = payload.get("info")
+                    usage, context = _codex_usage(info)
+                    if in_window and timestamp:
+                        activity_events.append(
+                            {
+                                "at": timestamp,
+                                "kind": "context",
+                                "tokens": context.get("tokens"),
+                                "context_window": context.get("context_window"),
+                                "percent": context.get("percent"),
+                            }
+                        )
+                    info = info if isinstance(info, dict) else {}
+                    total_usage = info.get("total_token_usage")
+                    total_usage = total_usage if isinstance(total_usage, dict) else {}
+                    cumulative_total = _number(total_usage.get("total_tokens"))
+                    is_new_usage = (
+                        cumulative_total is None
+                        or observed_token_total is None
+                        or cumulative_total > observed_token_total
+                    )
+                    if cumulative_total is not None:
+                        observed_token_total = cumulative_total
+                    if in_window and is_new_usage:
+                        estimate = estimate_codex_request_cost(
+                            info.get("last_token_usage"),
+                            model=result["model"],
+                            service_tier=result["service_tier"],
+                        )
+                        if estimate is None:
+                            unpriced_calls += 1
+                        else:
+                            estimated_cost_usd += float(estimate["cost_usd"])
+                            priced_calls += 1
+                            priced_models.add(str(estimate["model"]))
+                            priced_service_tiers.add(str(estimate["service_tier"]))
+                    if since_epoch is not None and epoch is not None and epoch < since_epoch:
+                        baseline_usage = usage
+                    elif in_window:
+                        result["usage"] = usage
+                        result["context"] = context
+                elif message_type == "task_complete":
+                    active_turns = max(0, active_turns - 1)
+                    terminal_event = "completed"
+                    if in_window:
+                        result["turns_completed"] += 1
+                    event_duration = _number(payload.get("duration_ms"))
+                    if event_duration is not None and since_epoch is None:
+                        duration_ms += float(event_duration)
+                    if in_window:
+                        result["time_to_first_token_ms"] = (
+                            _number(payload.get("time_to_first_token_ms"))
+                            or result["time_to_first_token_ms"]
+                        )
+                    if in_window:
+                        result["ended_at"] = timestamp
+                elif message_type == "turn_aborted":
+                    active_turns = max(0, active_turns - 1)
+                    terminal_event = "interrupted"
+                    if in_window:
+                        result["ended_at"] = timestamp
+            elif event_type == "response_item":
+                if not in_window:
+                    continue
+                response_type = payload.get("type")
+                if response_type == "agent_message" or (
+                    response_type == "message" and payload.get("role") == "assistant"
+                ):
+                    result["assistant_messages"] += 1
+                    assistant_text = _codex_assistant_text(payload)
+                    if assistant_text is not None:
+                        classification, normalized = _codex_assistant_class(
+                            assistant_text
+                        )
+                        duplicate = bool(
+                            normalized and normalized in seen_assistant_messages
+                        )
+                        if normalized:
+                            seen_assistant_messages.add(normalized)
+                        activity_message_counts[classification] += 1
+                        if duplicate:
+                            activity_message_counts["duplicate"] += 1
+                        if timestamp:
+                            activity_events.append(
+                                {
+                                    "at": timestamp,
+                                    "kind": "assistant_message",
+                                    "classification": classification,
+                                    "duplicate": duplicate,
+                                }
+                            )
+                elif response_type in {"function_call", "custom_tool_call"}:
+                    result["tool_calls"] += 1
+                    logical_name, category = _codex_activity_tool(payload)
+                    activity_tool_counts[category] += 1
+                    if timestamp:
+                        activity_events.append(
+                            {
+                                "at": timestamp,
+                                "kind": "tool_call",
+                                "category": category,
+                                "tool_name": logical_name,
+                            }
+                        )
+                elif response_type in {"function_call_output", "custom_tool_call_output"}:
+                    result["tool_results"] += 1
+
+    if malformed:
+        result["errors"].append(f"ignored {malformed} malformed JSONL line(s)")
+    if first_epoch is not None and last_epoch is not None:
+        result["wall_duration_seconds"] = max(0.0, last_epoch - first_epoch)
+    if duration_ms:
+        result["duration_seconds"] = duration_ms / 1000.0
+    if active_turns > 0:
+        result["terminal_state"] = "running"
+        result["ended_at"] = None
+    elif terminal_event is not None:
+        result["terminal_state"] = terminal_event
+    usage = result["usage"]
+    if isinstance(usage, dict):
+        usage = _usage_delta(usage, baseline_usage)
+        if since_epoch is not None and baseline_usage is None:
+            usage["scope"] = "window_total_without_baseline"
+        usage["assistant_messages"] = result["assistant_messages"]
+        usage["tool_calls"] = result["tool_calls"]
+        usage["tool_results"] = result["tool_results"]
+        complete_cost_estimate = priced_calls > 0 and unpriced_calls == 0
+        usage["cost_usd"] = estimated_cost_usd if complete_cost_estimate else None
+        usage["cost_estimate"] = {
+            "kind": "api_equivalent_model_rate_estimate",
+            "catalog": CODEX_PRICING_CATALOG,
+            "pricing_as_of": CODEX_PRICING_AS_OF,
+            "currency": "USD",
+            "priced_calls": priced_calls,
+            "unpriced_calls": unpriced_calls,
+            "complete": complete_cost_estimate,
+            "known_cost_usd": estimated_cost_usd if priced_calls else None,
+            "models": sorted(priced_models),
+            "service_tiers": sorted(priced_service_tiers),
+            "billing_note": (
+                "Model-rate estimate comparable to Pi statistics; not an "
+                "observed ChatGPT subscription charge."
+            ),
+        }
+        result["usage"] = usage
+    result["activity"] = {
+        "schema_version": CODEX_ACTIVITY_SCHEMA_VERSION,
+        "available": True,
+        "events": activity_events,
+        "tool_calls_by_category": dict(sorted(activity_tool_counts.items())),
+        "assistant_messages_by_class": dict(
+            sorted(activity_message_counts.items())
+        ),
+    }
+    return result
+
+
+def collect_codex_transcript_observability(
+    path: Path,
+    *,
+    since: str | None = None,
+) -> dict[str, Any]:
+    """Collect content-free Codex usage for a full transcript or time window."""
+    parsed = _parse_codex_session(path, since=since)
+    return {
+        "schema_version": OBSERVABILITY_SCHEMA_VERSION,
+        "agent_harness": "codex",
+        "source": "codex_session_jsonl",
+        "identity": {"native_session_id": parsed["session_id"]},
+        "execution": {
+            "provider": "openai-codex",
+            "model": parsed["model"],
+            "reasoning_effort": parsed["reasoning_effort"],
+            "service_tier": parsed["service_tier"],
+            "started_at": parsed["started_at"],
+            "ended_at": parsed["ended_at"],
+            "duration_seconds": parsed["duration_seconds"],
+            "wall_duration_seconds": parsed["wall_duration_seconds"],
+            "time_to_first_token_ms": parsed["time_to_first_token_ms"],
+            "turns_completed": parsed["turns_completed"],
+            "terminal_state": parsed["terminal_state"],
+        },
+        "usage": parsed["usage"],
+        "context": parsed["context"],
+        "activity": parsed["activity"],
+        "artifacts": {"session_file": str(path)},
+        "errors": parsed["errors"],
+    }
+
+
+def collect_codex_observability(
+    session: AgentSessionRecord,
+    *,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
+    payload = _base_observability(session)
+    session_file = discover_codex_session_file(session, codex_home=codex_home)
+    if session_file is None:
+        payload["source"] = "codex_session_not_found"
+        payload["errors"] = [
+            "Codex session JSONL was not bound and could not be discovered from the task name"
+        ]
+        return payload
+
+    parsed = _parse_codex_session(session_file)
+    execution = payload["execution"]
+    execution.update(
+        {
+            "provider": "openai-codex",
+            "model": parsed["model"] or execution["model"],
+            "reasoning_effort": parsed["reasoning_effort"] or execution["reasoning_effort"],
+            "service_tier": parsed["service_tier"] or execution["service_tier"],
+            "started_at": parsed["started_at"] or execution["started_at"],
+            "ended_at": parsed["ended_at"] or execution["ended_at"],
+            "duration_seconds": parsed["duration_seconds"],
+            "wall_duration_seconds": parsed["wall_duration_seconds"],
+            "time_to_first_token_ms": parsed["time_to_first_token_ms"],
+            "turns_completed": parsed["turns_completed"],
+            "terminal_state": parsed["terminal_state"],
+        }
+    )
+    if execution["runner_failed"]:
+        execution["terminal_state"] = "failed"
+    elif execution["timed_out"]:
+        execution["terminal_state"] = "timed_out"
+    if isinstance(parsed["usage"], dict):
+        payload["usage"] = parsed["usage"]
+    if isinstance(parsed["context"], dict):
+        payload["context"] = parsed["context"]
+    if isinstance(parsed["activity"], dict):
+        payload["activity"] = parsed["activity"]
+    payload["identity"]["external_id"] = (
+        payload["identity"]["external_id"] or parsed["session_id"]
+    )
+    payload["identity"]["native_session_id"] = parsed["session_id"]
+    payload["identity"]["nickname"] = payload["identity"]["nickname"] or parsed["nickname"]
+    payload["artifacts"]["session_file"] = str(session_file)
+    payload["source"] = "codex_session_jsonl"
+    payload["errors"] = parsed["errors"]
+    return payload

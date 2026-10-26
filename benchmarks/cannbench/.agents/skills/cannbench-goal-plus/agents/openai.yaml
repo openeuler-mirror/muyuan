@@ -1,0 +1,4 @@
+interface:
+  display_name: "CANNBench Goal Plus"
+  short_description: "部署、启动和监控单算子 K=4 CANNBench"
+  default_prompt: "Use $cannbench-goal-plus to deploy and launch the standard single-Mish K=4 CANNBench campaign, then monitor it."

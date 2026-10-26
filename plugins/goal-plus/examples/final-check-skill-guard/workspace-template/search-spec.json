@@ -1,0 +1,49 @@
+{
+  "objective": "increase score_batch throughput while preserving repository acceptance constraints",
+  "metric_name": "calls_per_second",
+  "metric_direction": "maximize",
+  "source_path": ".",
+  "edit_surface": {
+    "allow": ["scoring.py"],
+    "deny": [".agents/", ".goal-plus-verifiers/", "search-spec.json"]
+  },
+  "budget": {
+    "max_parallel": 1
+  },
+  "candidate_acceptance": [
+    "Compute every output from the current input contents on each call.",
+    "Do not cache complete outputs or use input identity or benchmark-specific shortcuts.",
+    "Only scoring.py may change, and calls_per_second must remain a finite positive metric."
+  ],
+  "process_verifiers": [
+    {
+      "name": "score_throughput",
+      "role": "ranking_signal",
+      "command": ["python3", ".goal-plus-verifiers/score_throughput.py"],
+      "timeout_seconds": 30
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "frozen_inputs",
+      "role": "anti_cheat_gate",
+      "command": ["goal-plus-internal", "check-frozen-hashes"]
+    }
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh",
+    "worker_budget": {
+      "max_runtime_seconds": 90,
+      "max_turns": 6
+    }
+  },
+  "workspace": {
+    "provider": "git_worktree",
+    "promotion_mode": "artifact_only"
+  },
+  "constraints": {
+    "suggested_batch_size": 1,
+    "task_summary": "Optimize scoring.py without cross-call input-dependent state."
+  }
+}

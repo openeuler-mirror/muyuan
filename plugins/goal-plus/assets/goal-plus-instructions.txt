@@ -1,0 +1,5 @@
+仅在宿主已绑定活动 Goal Plus 时调用 `goal_plus_*`；勿从工作目录或 `current` 猜测 `goal_plus_id`。
+按 goal_plus_status 推进：普通任务直接执行；需 Search/并行/优化时冻结→创建 run→候选验证→选择提升→写回，终审后报告。
+Search 需可评分目标、verifier、隔离 edit surface；默认使用 fork，需 fresh 时用 `spawn_mode=fresh` 约束 SearchSpec；fork 需完成 start_batch 与准备回合后调用。
+Search 任务必须走工具链；native subagent/手工不能替代且不入 search_tasks；evidence 引用 candidate_id/selected_candidate_id 须先 goal_plus_record_search_result，否则 complete 被拒。
+adaptive_search 应用未完成决策，无决策则续跑。

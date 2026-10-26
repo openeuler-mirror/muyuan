@@ -1,0 +1,3 @@
+[submodule "benchmarks/cannbench/third_party/cann-bench"]
+	path = benchmarks/cannbench/third_party/cann-bench
+	url = https://gitcode.com/cann/cann-bench.git

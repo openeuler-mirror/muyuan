@@ -1,0 +1,54 @@
+{
+  "objective": "在单位正方形内合法放置 26 个圆，并最大化半径之和",
+  "metric_name": "sum_radii",
+  "metric_direction": "maximize",
+  "source_path": "workspace-template",
+  "edit_surface": {
+    "allow": [
+      "initial_program.py"
+    ],
+    "deny": [
+      ".goal-plus-verifiers/circle_packing_score.py"
+    ]
+  },
+  "budget": {
+    "max_parallel": 2
+  },
+  "process_verifiers": [
+    {
+      "name": "circle_packing_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/circle_packing_score.py"
+      ],
+      "timeout_seconds": 30
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh",
+    "evidence_annotator": {
+      "timeout_seconds": 300
+    }
+  },
+  "workspace": {
+    "provider": "git_worktree",
+    "promotion_mode": "artifact_only"
+  },
+  "constraints": {
+    "success_threshold": 2.2,
+    "suggested_batch_size": 2,
+    "task_summary": "在单位正方形内返回恰好 26 个互不重叠的圆，并最大化所有圆的半径之和。"
+  }
+}

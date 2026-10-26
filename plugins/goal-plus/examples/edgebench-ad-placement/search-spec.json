@@ -1,0 +1,45 @@
+{
+  "objective": "在公开确定性案例上最大化 EdgeBench 格式的广告布局总分",
+  "metric_name": "local_score_sum",
+  "metric_direction": "maximize",
+  "source_path": "workspace-template",
+  "edit_surface": {
+    "allow": [
+      "solution.cpp"
+    ],
+    "deny": [
+      "README.md",
+      "tools/**",
+      ".goal-plus-verifiers/**"
+    ]
+  },
+  "process_verifiers": [
+    {
+      "name": "local_ad_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/ad_local_score.py"
+      ],
+      "timeout_seconds": 90
+    }
+  ],
+  "promotion_verifiers": [],
+  "budget": {
+    "max_parallel": 2
+  },
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh"
+  },
+  "workspace": {
+    "provider": "git_worktree",
+    "promotion_mode": "artifact_only"
+  },
+  "constraints": {
+    "suggested_batch_size": 2,
+    "task_summary": "只修改 solution.cpp。读取 n 和 n 组 x/y/r，输出 n 个互不重叠的整数矩形，并使用公开 generator 和 tester 优化本地得分。",
+    "edgebench_alignment": "提交文件、文本 I/O、generator CLI、tester CLI、Score = <integer> 输出、编译模式、单案例五秒限制、CPU-only 和离线规则，以及 1 GB 内存说明与 EdgeBench ad_placement_optimization 合同一致。案例和评分仍是公开合成 fixture，Goal Plus 不包含隐藏 judge。"
+  },
+  "root_hypotheses": []
+}

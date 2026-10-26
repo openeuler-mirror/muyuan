@@ -1,0 +1,58 @@
+{
+  "objective": "在所有公开案例保持正确的前提下，最小化 VLIW kernel 的模拟周期数",
+  "metric_name": "cycles",
+  "metric_direction": "minimize",
+  "source_path": "workspace-template",
+  "edit_surface": {
+    "allow": [
+      "solution.py"
+    ],
+    "deny": [
+      "README.md",
+      "problem.md",
+      "problem.py",
+      "runner.py",
+      "verifier.py",
+      "test_cases/**",
+      "public_tests/**",
+      ".goal-plus-verifiers/**"
+    ]
+  },
+  "budget": {
+    "max_parallel": 2
+  },
+  "process_verifiers": [
+    {
+      "name": "vliw_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/vliw_score.py"
+      ],
+      "timeout_seconds": 90
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh"
+  },
+  "workspace": {
+    "provider": "git_worktree",
+    "promotion_mode": "artifact_only"
+  },
+  "constraints": {
+    "suggested_batch_size": 2,
+    "task_summary": "只修改 solution.py，在所有公开案例保持正确的前提下，尽可能降低 cycles。",
+    "baseline_cycles": 147734
+  }
+}

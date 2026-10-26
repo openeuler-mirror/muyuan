@@ -1,0 +1,241 @@
+"""Read-only timing advisory for active Search candidate workers.
+
+The Search runtime records the evidence used here, but host adapters own when
+and how an advisory is delivered.  This module intentionally does not wait,
+interrupt, or mutate runtime state.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.ports.state import CandidateRecord
+
+
+OUTER_DEADLINE_ENV = "GOAL_PLUS_OUTER_DEADLINE_AT"
+
+
+def _timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def _deadline_timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        numeric = float(value)
+    except ValueError:
+        return _timestamp(value)
+    if numeric > 10_000_000_000:
+        numeric /= 1000
+    return numeric
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def find_agent_session(
+    root_dir: Path | str,
+    agent_session_id: str,
+) -> AgentSessionRecord | None:
+    return candidate_host_queries(root_dir).find_session(agent_session_id)
+
+
+def is_search_candidate_session(session: AgentSessionRecord) -> bool:
+    if session.agent_harness == "pi":
+        return str(session.launch.get("role") or "worker") == "worker"
+    # This typed record is created only by candidate_sessions and already binds
+    # run/candidate identity. A host task's display name does not confer a role.
+    return session.agent_harness == "codex"
+
+
+def _candidate_records(root: Path, run_id: str) -> list[CandidateRecord]:
+    run_dir = root / "runs" / run_id
+    candidates: list[CandidateRecord] = []
+    for path in sorted((run_dir / "candidates").glob("*/candidate.json")):
+        payload = _load_json(path)
+        if payload is None:
+            continue
+        try:
+            candidates.append(CandidateRecord.model_validate(payload))
+        except ValueError:
+            continue
+    return candidates
+
+
+def _iteration_verifier_seconds(iteration: Any) -> float | None:
+    elapsed = 0.0
+    observed = False
+    for metrics in iteration.metrics.values():
+        if not isinstance(metrics, dict):
+            continue
+        value = metrics.get("elapsed_seconds")
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and value >= 0
+        ):
+            elapsed += float(value)
+            observed = True
+    return elapsed if observed else None
+
+
+def _candidate_timings(candidates: list[CandidateRecord]) -> list[dict[str, Any]]:
+
+    timings: list[dict[str, Any]] = []
+    for candidate in candidates:
+        observed_iterations = [
+            (iteration, elapsed)
+            for iteration in candidate.iterations
+            if iteration.agent_session_id is not None
+            for elapsed in [_iteration_verifier_seconds(iteration)]
+            if elapsed is not None
+        ]
+        if not observed_iterations:
+            continue
+        elapsed = sum(item[1] for item in observed_iterations)
+        verifier_count = len(observed_iterations)
+        timings.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "elapsed_seconds": elapsed,
+                "verifier_count": verifier_count,
+                "average_seconds": elapsed / verifier_count,
+                "last_verifier_at": observed_iterations[-1][0].created_at,
+            }
+        )
+    return timings
+
+
+def _available_time(
+    session: AgentSessionRecord,
+    *,
+    now_epoch: float,
+    remaining_seconds: float | None,
+    outer_deadline_at: str | None,
+) -> tuple[float, str] | None:
+    choices: list[tuple[float, str]] = []
+    if remaining_seconds is not None:
+        choices.append((max(0.0, float(remaining_seconds)), "host_worker_deadline"))
+
+    outer_deadline = _deadline_timestamp(
+        outer_deadline_at
+        if outer_deadline_at is not None
+        else os.environ.get(OUTER_DEADLINE_ENV)
+    )
+    if outer_deadline is not None:
+        choices.append((max(0.0, outer_deadline - now_epoch), "outer_deadline"))
+    return min(choices, key=lambda item: item[0]) if choices else None
+
+
+def _format_duration(seconds: float) -> str:
+    rounded = max(0, int(round(seconds)))
+    minutes, remainder = divmod(rounded, 60)
+    if minutes:
+        return f"{minutes}m{remainder:02d}s"
+    return f"{remainder}s"
+
+
+def _message(
+    *,
+    remaining_seconds: float,
+    average_seconds: float,
+    timings: list[dict[str, Any]],
+    low_sample: bool,
+) -> str:
+    lines = [
+        "时间提示（仅供参考）：可用时间 "
+        f"{_format_duration(remaining_seconds)} 低于观测到的 verifier 提交平均耗时 "
+        f"{_format_duration(average_seconds)}。",
+        "观测到的候选耗时：",
+    ]
+    for timing in timings:
+        lines.append(
+            f"- {timing['candidate_id']}: "
+            f"已用 {_format_duration(float(timing['elapsed_seconds']))} / "
+            f"{timing['verifier_count']} 次 subagent verifier 提交 = "
+            f"平均 {_format_duration(float(timing['average_seconds']))}"
+        )
+    if low_sample:
+        lines.append("该估算只有一个提交样本，应视为低置信度。")
+    lines.append(
+        "请考虑剩余时间。自行决定继续当前工作，还是最后运行一次 goal_plus_search_run_verifier "
+        "并返回当前最佳结果；不强制采取任何动作。"
+    )
+    return "\n".join(lines)
+
+
+def build_search_time_advisory(
+    root_dir: Path | str,
+    agent_session_id: str,
+    *,
+    remaining_seconds: float | None = None,
+    outer_deadline_at: str | None = None,
+    now_epoch: float | None = None,
+) -> dict[str, Any] | None:
+    """Build an advisory when one more average verifier submission will not fit."""
+
+    root = Path(root_dir).resolve()
+    session = find_agent_session(root, agent_session_id)
+    if session is None or not is_search_candidate_session(session):
+        return None
+    current_epoch = (
+        datetime.now(timezone.utc).timestamp() if now_epoch is None else float(now_epoch)
+    )
+    available = _available_time(
+        session,
+        now_epoch=current_epoch,
+        remaining_seconds=remaining_seconds,
+        outer_deadline_at=outer_deadline_at,
+    )
+    if available is None:
+        return None
+    available_seconds, deadline_source = available
+    timings = _candidate_timings(_candidate_records(root, session.run_id))
+    total_verifier_count = sum(
+        int(timing["verifier_count"]) for timing in timings
+    )
+    if total_verifier_count <= 0:
+        return None
+    average_seconds = sum(
+        float(timing["elapsed_seconds"]) for timing in timings
+    ) / total_verifier_count
+    if average_seconds <= 0 or available_seconds >= average_seconds:
+        return None
+    low_sample = total_verifier_count == 1
+    return {
+        "run_id": session.run_id,
+        "candidate_id": session.candidate_id,
+        "agent_session_id": session.agent_session_id,
+        "deadline_source": deadline_source,
+        "remaining_seconds": available_seconds,
+        "average_submission_seconds": average_seconds,
+        "total_verifier_count": total_verifier_count,
+        "low_sample": low_sample,
+        "candidates": timings,
+        "message": _message(
+            remaining_seconds=available_seconds,
+            average_seconds=average_seconds,
+            timings=timings,
+            low_sample=low_sample,
+        ),
+    }

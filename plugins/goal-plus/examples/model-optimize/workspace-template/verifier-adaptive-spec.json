@@ -1,0 +1,91 @@
+{
+  "objective": "maximize single-core PyTorch tokens_per_second while preserving the deterministic workload checksum",
+  "metric_name": "tokens_per_second",
+  "metric_direction": "maximize",
+  "source_path": "examples/model-optimize/workspace-template",
+  "workspace": {
+    "provider": "git_worktree"
+  },
+  "edit_surface": {
+    "allow": [
+      "model.py",
+      "serving.py"
+    ],
+    "deny": [
+      "benchmark.py",
+      "verify.py",
+      "single_thread.py",
+      "workload.json",
+      ".goal-plus-verifiers/**",
+      "cpp_reference/**"
+    ]
+  },
+  "process_verifiers": [
+    {
+      "name": "torch_cpu_validity",
+      "role": "validity_gate",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--validate"
+      ],
+      "timeout_seconds": 60,
+      "resource_lock": "torch-cpu-verifier"
+    },
+    {
+      "name": "torch_cpu_tokens_per_second",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--rank"
+      ],
+      "timeout_seconds": 120,
+      "resource_lock": "torch-cpu-verifier"
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "torch_cpu_validity",
+      "role": "promotion_gate",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--validate"
+      ],
+      "timeout_seconds": 60,
+      "resource_lock": "torch-cpu-verifier"
+    }
+  ],
+  "budget": {
+    "max_parallel": 2,
+    "max_candidates": 4
+  },
+  "strategy": {
+    "name": "agent_guided",
+    "initial_context": "fresh",
+    "worker_budget": {
+      "max_runtime_seconds": 360
+    },
+    "adaptive_search": {
+      "allocation": {"policy": "swe_search_uct/v1"}
+    },
+    "selection": {
+      "ranking_keys": [
+        "quality_score",
+        "hard_score"
+      ],
+      "ranking_tolerance": [
+        0.05,
+        0.0
+      ]
+    },
+    "verifier": {
+      "scores": ["progress_reward", "allocation_utility"]
+    }
+  },
+  "constraints": {
+    "suggested_batch_size": 2,
+    "task_summary": "Optimize only model.py or serving.py. Keep PyTorch, OpenMP, MKL, and build thread counts at one. Apply only persisted deterministic AllocationDecisions; retired candidates must not start another iteration."
+  }
+}
