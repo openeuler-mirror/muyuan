@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "meta-tool-online"
 version = "1.0.0"
-description = "Core contracts and runtime for generalized agent workflows"
+description = "Core contracts and validated deterministic runtime for BATE meta-tools"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
-  {name = "Independent reproduction"}
+  {name = "kkjocker"}
 ]
-dependencies = []
+dependencies = ["jsonschema>=4.20,<5", "referencing>=0.30,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

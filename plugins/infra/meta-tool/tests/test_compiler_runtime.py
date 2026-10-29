@@ -76,9 +76,9 @@ def test_async_runtime_awaits_async_primitive_tools():
 def test_runtime_rejects_missing_and_unknown_inputs():
     executor = MetaToolExecutor({"lookup": lambda key: {"identifier": key}})
 
-    with pytest.raises(ValueError, match="Missing required"):
+    with pytest.raises(ValueError, match="required"):
         executor.execute(_spec(), {})
-    with pytest.raises(ValueError, match="Unknown meta-tool inputs"):
+    with pytest.raises(ValueError, match="additionalProperties"):
         executor.execute(_spec(), {"key": "alpha", "extra": True})
 
 

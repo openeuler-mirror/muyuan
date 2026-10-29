@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from .spec import MetaToolSpec
+from .validation import MetaToolValidationError, validate_inputs
 
 
 ToolCallable = Callable[..., Any]
@@ -273,15 +274,4 @@ def _resolve_path(value: Any, path: Any) -> Any:
 
 
 def _validate_inputs(spec: MetaToolSpec, inputs: Mapping[str, Any]) -> None:
-    if not isinstance(inputs, Mapping):
-        raise TypeError("Meta-tool inputs must be a mapping")
-    schema = spec.input_schema
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
-    missing = [str(name) for name in required if name not in inputs]
-    if missing:
-        raise ValueError(f"Missing required meta-tool inputs: {', '.join(missing)}")
-    if schema.get("additionalProperties") is False:
-        unknown = sorted(set(inputs) - set(properties))
-        if unknown:
-            raise ValueError(f"Unknown meta-tool inputs: {', '.join(unknown)}")
+    validate_inputs(spec.input_schema, inputs)
