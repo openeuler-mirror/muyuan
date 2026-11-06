@@ -2,7 +2,7 @@
 
 This directory is a standalone Pi host adapter. Its Python JSON-lines transport
 calls **this repository's** `bate.cli extract --source graph --also-raw
---no-baseline --naming stable-short`. It does not import or start another
+--naming stable-short`. It does not import or start another
 algorithm repository. Branch splitting, determinism and compilation remain
 owned by BATE; Pi adds execution admission and catalogue lifecycle handling.
 An optional read-only CLI observer supplies aligned occurrence evidence to the
@@ -52,7 +52,7 @@ from the repository root.
 
 For a real Pi main/worker-wrapper check without model calls, run
 `python3 tests/smoke_read_batches.py --pi /path/to/pi` here. It checks default
-Static/Online batching, explicit opt-out, and old two-extension launchers using
+Static/Online batching, explicit opt-out, and worker propagation using
 isolated temporary workspaces.
 
 ## Goal-Plus 长任务与单次 Pi 运行
@@ -87,9 +87,8 @@ Main 和 candidate 的状态仍在各自工作区内，不通过扩大沙箱或�
 
 正常加载 `extensions/meta-tool.ts` 即会注册 `meta_tool_read_batch`，并由现有
 `bin/pi` 自动传播到 Goal-Plus 原生 Pi worker。Static 和 Online 都默认开启，
-不需要另外加载 `extensions/read-batch.ts`、准备 user catalog 或先采集当前项目轨迹。
-旧启动器同时加载两个扩展也可以；`read-batch.ts` 的默认入口保留为兼容入口，
-由主扩展统一注册工具。
+无需准备 user catalog 或先采集当前项目轨迹。批读由主扩展统一注册，
+旧启动器需移除额外的 `extensions/read-batch.ts` 扩展参数。
 
 仓库内置三个历史提取、已验证的 2/3/4-read 模板，位于
 `src/bundled-read-batches.json`。它们沿用 2026-10-23 worker 批读实验的模板与证据，

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import compatibilityExtension, { registerReadBatch } from "../extensions/read-batch.ts";
+import { registerReadBatch } from "../extensions/read-batch.ts";
 import { loadConfig, saveState } from "../src/config.ts";
 import { loadExecutionUserCatalog } from "../src/read-batch-catalog.ts";
 import { isCallerBoundReadBatch } from "../src/read-batches.ts";
@@ -82,7 +82,6 @@ test("batch entry executes pinned compositions and respects disable and trust", 
 			},
 		};
 		registerReadBatch(pi);
-		compatibilityExtension(); // Old launchers can still load the extra extension.
 		const refresh = async (event: string) => { for (const hook of hooks.get(event) ?? []) await hook({}, ctx); };
 		await refresh("session_start");
 		assert(active.includes("meta_tool_read_batch"));

@@ -35,29 +35,17 @@ class CallOccurrence:
 
 @dataclass(frozen=True)
 class ActionToken:
-    """One transition in a possibly compressed execution path."""
+    """One primitive transition in an observed execution path."""
 
     name: str
     calls: tuple[CallOccurrence, ...]
-    meta_id: str | None = None
 
     @classmethod
     def primitive(cls, occurrence: CallOccurrence) -> "ActionToken":
         return cls(name=occurrence.canonical.name, calls=(occurrence,))
 
-    @classmethod
-    def meta(
-        cls, meta_id: str, actions: Iterable["ActionToken"]
-    ) -> "ActionToken":
-        calls = tuple(
-            occurrence for action in actions for occurrence in action.calls
-        )
-        return cls(name=meta_id, calls=calls, meta_id=meta_id)
-
     @property
     def key(self) -> str:
-        if self.meta_id is not None:
-            return f"meta:{self.meta_id}"
         return self.calls[0].canonical.action_key
 
     @property
@@ -77,13 +65,6 @@ class ExecutionPath:
                 f"Invalid path {self.trace_id!r}: "
                 f"{len(self.nodes)} nodes for {len(self.actions)} actions"
             )
-
-    def copy(self) -> "ExecutionPath":
-        return ExecutionPath(
-            trace_id=self.trace_id,
-            nodes=list(self.nodes),
-            actions=list(self.actions),
-        )
 
 
 @dataclass

@@ -42,7 +42,7 @@ def discover_online(payload: Mapping[str, Any]) -> dict[str, Any]:
     if len({t.trace_id for t in traces}) != len(traces):
         raise ValueError("Trace IDs must be unique")
     normalization = dict(config.get("normalization") or {})
-    normalization.update(argument_matching="structural", structural_fallback=False)
+    normalization.update(argument_matching="structural")
     extraction = dict(config.get("extraction") or {})
     admission = dict(config.get("admission") or {})
     adapter = dict(payload.get("adapter") or {})
@@ -55,8 +55,8 @@ def discover_online(payload: Mapping[str, Any]) -> dict[str, Any]:
     write_json(config_path, {"normalization": normalization, "extraction": extraction})
     argv = [
         "extract", "--traces", str(trace_path), "--out", str(output),
-        "--baseline-config", str(config_path), "--source", "graph", "--also-raw",
-        "--no-baseline", "--naming", "stable-short",
+        "--config", str(config_path), "--source", "graph", "--also-raw",
+        "--naming", "stable-short",
         "--min-support", str(extraction.get("threshold", 3)),
         "--min-len", str(extraction.get("min_steps", 2)),
         "--max-len", str(extraction.get("max_steps", 8)),
@@ -145,7 +145,6 @@ def discover_online(payload: Mapping[str, Any]) -> dict[str, Any]:
         "pi_meta_tool_adapter": {"executable_tools": sorted(supported),
                                  "observed_tools": sorted(observed),
                                  "observed_but_not_executable": sorted(observed - supported)},
-        "pi_meta_tool_optimization": {"enabled": False, "iterations": 0},
     }
     write_json(output / "report.json", report)
     return {

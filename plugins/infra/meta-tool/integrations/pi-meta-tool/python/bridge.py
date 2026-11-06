@@ -8,7 +8,6 @@ import os
 import sys
 import traceback
 import uuid
-from dataclasses import replace
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,6 @@ if str(META_TOOL_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(META_TOOL_ROOT / "src"))
 
 from bate.dispatch import AccelerationPolicy, DispatchMode, MetaToolDispatcher
-from bate.spec import MetaToolSpec
 from bate.runtime import ToolRegistry
 from bate.models import Trace
 from bate.io import load_specs, load_traces

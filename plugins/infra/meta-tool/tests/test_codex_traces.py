@@ -156,8 +156,8 @@ def test_codex_import_feeds_branch_aware_not_baseline(tmp_path):
     assert main(["import-traces", "--input", *inputs, "--out", str(imported)]) == 0
     out = tmp_path / "extracted"
     assert extract(["extract", "--traces", str(imported), "--out", str(out),
-                    "--baseline-config", str(fixtures / "branched_config.json"),
-                    "--also-raw", "--require-fully-bound", "--no-baseline",
+                    "--config", str(fixtures / "branched_config.json"),
+                    "--also-raw", "--require-fully-bound",
                     "--naming", "stable-short", "--max-len", "4"]) == 0
     actual = load_specs(out / "active_meta_tools.json")
     expected = load_specs(fixtures / "branched_catalog_before_migration.json")

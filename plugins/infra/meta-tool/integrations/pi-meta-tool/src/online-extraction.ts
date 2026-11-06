@@ -262,9 +262,7 @@ export async function runOnlineExtraction(options: {
 				},
 				config: {
 					normalization: options.config.normalization,
-					optimization: options.config.optimization,
 					extraction: options.config.extraction,
-					compiler: options.config.compiler,
 					admission: options.config.admission,
 				},
 			},

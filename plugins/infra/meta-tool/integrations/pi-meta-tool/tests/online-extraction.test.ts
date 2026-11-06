@@ -108,7 +108,6 @@ test("online extraction merges sessions and atomically publishes a generalized c
 					},
 				],
 			},
-			optimization: { ...base.optimization, enabled: false },
 			extraction: { ...base.extraction, threshold: 2 },
 			admission: {
 				...base.admission,
@@ -157,9 +156,7 @@ test("online extraction merges sessions and atomically publishes a generalized c
 				adapter: { supportedTools: [...supportedTools] },
 				config: {
 					normalization: config.normalization,
-					optimization: config.optimization,
 					extraction: config.extraction,
-					compiler: config.compiler,
 					admission: config.admission,
 				},
 			},

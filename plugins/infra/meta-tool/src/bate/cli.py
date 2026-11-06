@@ -52,7 +52,7 @@ def main(argv=None, *, on_templates=None):
     ex = sub.add_parser("extract", help="Extract and compile BATE workflows")
     ex.add_argument("--traces", required=True, type=Path)
     ex.add_argument("--out", required=True, type=Path)
-    ex.add_argument("--config", "--baseline-config", dest="config", type=Path)
+    ex.add_argument("--config", type=Path)
     ex.add_argument("--extraction-config", type=Path)
     ex.add_argument("--source", choices=["graph", "raw"], default="graph")
     ex.add_argument("--min-len", type=int, default=2)
@@ -67,7 +67,6 @@ def main(argv=None, *, on_templates=None):
     ex.add_argument("--keep-nested", action="store_true")
     ex.add_argument("--also-raw", action="store_true")
     # Compatibility with existing host invocations; no old baseline exists here.
-    ex.add_argument("--no-baseline", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.command == "extract-read-batches":
         from .read_batches import extract_read_batches

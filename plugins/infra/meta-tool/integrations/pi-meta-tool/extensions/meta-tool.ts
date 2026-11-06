@@ -1503,11 +1503,6 @@ export default function metaToolExtension(pi: ExtensionAPI) {
 					);
 					return;
 				}
-				if (extractArguments.deprecatedGeneralizeAlias)
-					ctx.ui.notify(
-						"--generalize is now a compatibility alias; every extraction uses structural generalization.",
-						"info",
-					);
 				ctx.ui.setStatus(
 					"meta-tool",
 					"meta-tool: discovering generalized workflows",
@@ -1546,9 +1541,7 @@ export default function metaToolExtension(pi: ExtensionAPI) {
 							},
 							config: {
 								normalization: withGeneralizedExtraction(config.normalization),
-								optimization: config.optimization,
 								extraction: config.extraction,
-								compiler: config.compiler,
 								admission: {
 									...config.admission,
 									// Manual extraction is an explicit user action and may
@@ -1897,14 +1890,6 @@ export default function metaToolExtension(pi: ExtensionAPI) {
 				activateMetaTools(pi, false);
 				ctx.ui.setStatus("meta-tool", undefined);
 				ctx.ui.notify("Meta-tool disabled.", "info");
-				return;
-			}
-
-			if (subcommand === "approve") {
-				ctx.ui.notify(
-					"The online edition no longer needs manual candidate approval. Admission is automatic; mutating workflows retain run/step confirmations. Use /meta-tool promote <name> only to share an admitted workflow across projects.",
-					"info",
-				);
 				return;
 			}
 

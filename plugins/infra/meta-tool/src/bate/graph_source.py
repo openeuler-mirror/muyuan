@@ -147,10 +147,9 @@ def enumerate_graph_candidates(
 
 
 def structural_continuation(corpus: GraphCorpus, structural: tuple[str, ...]):
-    """Next-action fan-out after `structural` on the compressed graph.
+    """Next-action fan-out after `structural` on observed execution paths.
 
-    This is the quantity `_sequence_branch_dominance` turns into a hard gate.
-    Kept only as a diagnostic here.
+    Kept as a diagnostic, not an admission gate.
     """
 
     import collections

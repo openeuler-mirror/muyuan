@@ -37,6 +37,9 @@ branches; `rejected_meta_tools.json` gives rejection reasons. Static hosts freez
 this output; Online hosts trigger this same extractor as evidence accumulates.
 Built-in read batches are separate from learned workflows.
 
-The legacy `--baseline-config` spelling remains an alias for `--config`, and
-`--no-baseline` is a no-op for existing host callers. No comparison baseline or
-old selector is packaged. JSON workflow and trace formats remain compatible.
+Use `--config` in host launchers; the obsolete `--baseline-config` alias and
+`--no-baseline` no-op have been removed. Pi extraction is always structural:
+use `/meta-tool extract [trace-path]` without `--generalize`. Candidate admission
+is automatic, so the obsolete `/meta-tool approve` command has also been removed;
+mutation confirmations still apply at execution time. JSON workflow and trace
+formats remain compatible.

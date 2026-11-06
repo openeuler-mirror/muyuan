@@ -53,7 +53,3 @@ export function registerReadBatch(pi: any) {
   pi.on("session_start", refresh);
   pi.on("before_agent_start", refresh);
 }
-
-// Kept for old launchers that explicitly load both extensions. Registration is
-// owned by meta-tool.ts, so loading this compatibility entry cannot duplicate it.
-export default function readBatchCompatibility() {}

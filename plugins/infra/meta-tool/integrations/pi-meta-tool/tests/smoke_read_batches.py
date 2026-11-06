@@ -22,18 +22,17 @@ def main():
     extension = package / "extensions/meta-tool.ts"
     probe = package / "tests/fixtures/read-batch-probe.ts"
     cases = [
-        ("fresh-default", None, False, False, False),
-        ("static-main", False, False, False, False),
-        ("online-main", True, False, False, False),
-        ("static-opt-out", False, True, False, False),
-        ("online-opt-out", True, True, False, False),
-        ("static-worker-wrapper", False, False, True, False),
-        ("online-worker-wrapper", True, False, True, False),
-        ("legacy-two-extension-launch", False, False, False, True),
+        ("fresh-default", None, False, False),
+        ("static-main", False, False, False),
+        ("online-main", True, False, False),
+        ("static-opt-out", False, True, False),
+        ("online-opt-out", True, True, False),
+        ("static-worker-wrapper", False, False, True),
+        ("online-worker-wrapper", True, False, True),
     ]
     with tempfile.TemporaryDirectory(prefix="bate-read-batch-smoke-") as temporary:
         root = Path(temporary)
-        for name, online, disabled, worker, legacy in cases:
+        for name, online, disabled, worker in cases:
             cwd = root / name
             cwd.mkdir()
             config = {"routing": {"includeUserCatalog": False},
@@ -62,8 +61,6 @@ def main():
                         "--provider", "openai", "--model", "gpt-4o-mini", "--thinking", "off", "--mode", "json"]
             if not worker:
                 command += ["--extension", str(extension)]
-            if legacy:
-                command += ["--extension", str(package / "extensions/read-batch.ts")]
             command += ["--extension", str(probe), "--print", "read-batch wiring probe"]
             result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=60)
             records = []

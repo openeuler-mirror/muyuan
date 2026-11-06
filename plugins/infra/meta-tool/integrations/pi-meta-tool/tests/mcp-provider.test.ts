@@ -62,9 +62,7 @@ function baseConfig(): PluginConfig {
 		pythonCommand: "python3",
 		timeoutMs: 30_000,
 		normalization: { tool_rules: [] },
-		optimization: {},
 		extraction: {},
-		compiler: {},
 		admission: { read_only_tools: ["read"] },
 	};
 }

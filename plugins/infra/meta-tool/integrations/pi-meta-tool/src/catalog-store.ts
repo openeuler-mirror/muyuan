@@ -24,7 +24,6 @@ const ARTIFACT_NAMES = [
 	"rejected_meta_tools.json",
 	"report.json",
 	"normalization_config.json",
-	"optimization_report.json",
 	"tool_schemas.json",
 	"candidates.json",
 ] as const;

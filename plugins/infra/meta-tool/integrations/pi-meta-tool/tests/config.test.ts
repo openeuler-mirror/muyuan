@@ -21,9 +21,7 @@ test("stale offline config cannot restore exact-only extraction", async () => {
 			JSON.stringify({
 				normalization: {
 					argument_matching: "exact",
-					structural_fallback: true,
 				},
-				extraction: { enable_structural_sequence_fallback: false },
 				online: { maxBytesPerExtraction: 1 },
 				catalog: {
 					versioned: false,
@@ -33,8 +31,6 @@ test("stale offline config cannot restore exact-only extraction", async () => {
 		);
 		const config = await loadConfig(cwd, "/package/root");
 		assert.equal(config.normalization.argument_matching, "structural");
-		assert.equal(config.normalization.structural_fallback, false);
-		assert.equal(config.extraction.enable_structural_sequence_fallback, true);
 		assert.equal(config.online.enabled, true);
 		assert.equal(config.online.maxBytesPerExtraction, 1024 * 1024);
 		assert.equal(config.online.traceEligibility, "recovered_segment");
@@ -48,6 +44,18 @@ test("stale offline config cannot restore exact-only extraction", async () => {
 		);
 		assert.equal(config.catalog.versioned, true);
 		assert.doesNotMatch(config.catalog.userCatalogDir, /^~/);
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
+test("rejects an enabled legacy optimization loop before extraction", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "meta-tool-legacy-config-"));
+	try {
+		const paths = getPluginPaths(cwd);
+		await mkdir(paths.stateDir, { recursive: true });
+		await writeFile(paths.configFile, JSON.stringify({ optimization: { enabled: true } }));
+		await assert.rejects(() => loadConfig(cwd, "/package/root"), /optimization loop/);
 	} finally {
 		await rm(cwd, { recursive: true, force: true });
 	}

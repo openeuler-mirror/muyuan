@@ -31,18 +31,16 @@ def request(tmp_path):
     }
 
 
-def test_online_uses_branch_aware_cli_without_baseline(tmp_path, monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("online BATE must never call baseline discover")
+def test_online_uses_branch_aware_cli_without_baseline(tmp_path):
     assert not (ROOT / "src/bate/pipeline.py").exists()
     payload = request(tmp_path)
     result = discovery.discover_online(payload)
     assert result["extractor"] == "bate-branch-aware"
     assert result["activeMetaTools"] == 2
     main(["extract", "--traces", payload["tracePath"], "--out", str(tmp_path / "cli"),
-          "--baseline-config", str(FIXTURES / "branched_config.json"),
+          "--config", str(FIXTURES / "branched_config.json"),
           "--also-raw", "--max-len", "4", "--require-fully-bound",
-          "--no-baseline", "--naming", "stable-short"])
+          "--naming", "stable-short"])
     for filename in ("bate_only_catalog.json", "extraction_summary.json"):
         assert json.loads((tmp_path / "online" / filename).read_text()) == json.loads(
             (tmp_path / "cli" / filename).read_text())

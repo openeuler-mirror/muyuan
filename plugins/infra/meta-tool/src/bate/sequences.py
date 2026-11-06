@@ -98,23 +98,6 @@ def is_contiguous_subsequence(small: tuple[str, ...], big: tuple[str, ...]) -> b
     return any(big[i : i + width] == small for i in range(len(big) - width + 1))
 
 
-def prune_to_maximal(candidates: list[SequenceCandidate]) -> list[SequenceCandidate]:
-    """Drop a sequence that is a contiguous subsequence of a longer kept one.
-
-    Emitting both "a->b" and "a->b->c" is redundant: the executor would always
-    prefer the longer one, and nesting inflates the catalog without adding
-    decision savings.
-    """
-    ordered = sorted(candidates, key=lambda c: (-c.n_steps, -c.support, c.sequence))
-    kept: list[SequenceCandidate] = []
-    for cand in ordered:
-        if any(is_contiguous_subsequence(cand.sequence, k.sequence) for k in kept):
-            continue
-        kept.append(cand)
-    kept.sort(key=lambda c: (-c.total_decisions_saved, -c.support, c.sequence))
-    return kept
-
-
 def select_non_nested(
     candidates: list[SequenceCandidate],
     *,
@@ -122,7 +105,7 @@ def select_non_nested(
 ) -> list[SequenceCandidate]:
     """Greedily keep mutually non-nested sequences, best score first.
 
-    `prune_to_maximal` is wrong for this purpose: extending a sequence lowers its
+    Keeping only maximal sequences is wrong: extending a sequence lowers its
     support, so the longest path often saves *fewer* decisions in total than a
     shorter prefix of it. On AppWorld the 3-step login template
     (16 occurrences x 2 = 32 saved) beats the 8-step extension

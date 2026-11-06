@@ -139,9 +139,7 @@ export interface PluginConfig {
 	pythonCommand: string;
 	timeoutMs: number;
 	normalization: Record<string, unknown>;
-	optimization: Record<string, unknown>;
 	extraction: Record<string, unknown>;
-	compiler: Record<string, unknown>;
 	admission: Record<string, unknown>;
 	online: OnlineConfig;
 	routing: RoutingConfig;

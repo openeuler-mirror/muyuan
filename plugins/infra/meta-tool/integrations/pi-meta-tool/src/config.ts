@@ -21,8 +21,6 @@ const DEFAULT_NORMALIZATION: Record<string, unknown> = {
 	// generalization. Exact matching remains available only inside the Python
 	// core for benchmarks and compatibility tests.
 	argument_matching: "structural",
-	structural_fallback: false,
-	structural_fallback_max_calls: 5000,
 	regex_substitutions: [],
 	tool_rules: [
 		{
@@ -44,25 +42,9 @@ const PROJECT_CONFIG_DIR = ".pi";
 const DEFAULT_EXTRACTION: Record<string, unknown> = {
 	threshold: 3,
 	min_steps: 2,
-	majority_fraction: 0.5,
-	min_sequence_purity: 0.8,
-	min_llm_turn_coverage: 0,
-	min_llm_calls_saved_per_occurrence: 0,
 	require_internal_data_flow: true,
 	min_varying_data_flows: 1,
-	min_runtime_local_data_flows: 0,
-	max_data_flow_bridge_steps: 2,
 	max_meta_tools: 20,
-	enable_structural_sequence_fallback: true,
-	max_structural_sequence_start_pairs: 128,
-};
-
-const DEFAULT_OPTIMIZATION: Record<string, unknown> = {
-	enabled: false,
-	max_iterations: 10,
-	sample_size: 64,
-	seed: 0,
-	max_node_collapse_fraction: 0.75,
 };
 
 const DEFAULT_ADMISSION_POLICY: Record<string, unknown> = {
@@ -303,6 +285,8 @@ export async function loadConfig(
 	const cached = CONFIG_CACHE.get(cacheKey);
 	if (cached?.signature === signature) return cached.config;
 	const raw = await readObject(configPath);
+	if (isRecord(raw.optimization) && raw.optimization.enabled)
+		throw new Error("BATE does not use a normalization-rule optimization loop");
 	const inferredRoot = resolve(packageRoot, "../..");
 	const metaToolRoot =
 		optionalString(process.env.META_TOOL_ROOT) ??
@@ -332,17 +316,11 @@ export async function loadConfig(
 			...DEFAULT_NORMALIZATION,
 			...(isRecord(raw.normalization) ? raw.normalization : {}),
 			argument_matching: "structural",
-			structural_fallback: false,
 		},
-		optimization: isRecord(raw.optimization)
-			? { ...DEFAULT_OPTIMIZATION, ...raw.optimization }
-			: DEFAULT_OPTIMIZATION,
 		extraction: {
 			...DEFAULT_EXTRACTION,
 			...(isRecord(raw.extraction) ? raw.extraction : {}),
-			enable_structural_sequence_fallback: true,
 		},
-		compiler: isRecord(raw.compiler) ? raw.compiler : {},
 		admission: isRecord(raw.admission)
 			? {
 					...DEFAULT_ADMISSION,
@@ -616,13 +594,7 @@ export function defaultConfigDocument(): Record<string, unknown> {
 	return {
 		timeoutMs: 120_000,
 		normalization: DEFAULT_NORMALIZATION,
-		optimization: DEFAULT_OPTIMIZATION,
 		extraction: DEFAULT_EXTRACTION,
-		compiler: {
-			parameterize_all_scalars: false,
-			unstable_runtime_argument_pattern:
-				"(?i)(^|\\.)(ref|element_id|node_id|backend_node_id|target_id)$",
-		},
 		admission: DEFAULT_ADMISSION,
 		online: DEFAULT_ONLINE,
 		routing: DEFAULT_ROUTING,

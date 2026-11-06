@@ -149,8 +149,6 @@ class NormalizationConfig:
     include_annotators: bool = False
     state_context_fields: tuple[str, ...] = ()
     argument_matching: str = "exact"
-    structural_fallback: bool = False
-    structural_fallback_max_calls: int = 5000
     structural_exact_tool_patterns: tuple[str, ...] = (
         _DEFAULT_STRUCTURAL_EXACT_TOOL_PATTERNS
     )
@@ -163,8 +161,6 @@ class NormalizationConfig:
             raise ValueError(
                 "argument_matching must be either 'exact' or 'structural'"
             )
-        if self.structural_fallback_max_calls < 2:
-            raise ValueError("structural_fallback_max_calls must be at least 2")
         for pattern in self.structural_exact_tool_patterns:
             re.compile(pattern)
 
@@ -188,10 +184,6 @@ class NormalizationConfig:
                 str(item) for item in data.get("state_context_fields", [])
             ),
             argument_matching=str(data.get("argument_matching", "exact")),
-            structural_fallback=bool(data.get("structural_fallback", False)),
-            structural_fallback_max_calls=int(
-                data.get("structural_fallback_max_calls", 5000)
-            ),
             structural_exact_tool_patterns=tuple(
                 str(item)
                 for item in data.get(
@@ -220,10 +212,6 @@ class NormalizationConfig:
             "include_annotators": self.include_annotators,
             "state_context_fields": list(self.state_context_fields),
             "argument_matching": self.argument_matching,
-            "structural_fallback": self.structural_fallback,
-            "structural_fallback_max_calls": (
-                self.structural_fallback_max_calls
-            ),
             "structural_exact_tool_patterns": list(
                 self.structural_exact_tool_patterns
             ),

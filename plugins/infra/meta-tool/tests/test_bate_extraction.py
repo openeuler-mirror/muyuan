@@ -3,14 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 from pathlib import Path
-import shutil
-import subprocess
-import sys
-import textwrap
-import venv
-import zipfile
 
 import pytest
 
@@ -31,7 +24,7 @@ FIXTURES = ROOT / "tests/fixtures"
 def test_extraction_matches_pre_migration_catalog(tmp_path, source, extra):
     assert main([
         "extract", "--traces", str(FIXTURES / "branched_traces.json"),
-        "--baseline-config", str(FIXTURES / "branched_config.json"),
+        "--config", str(FIXTURES / "branched_config.json"),
         "--out", str(tmp_path), "--source", source, "--max-len", "4", *extra,
     ]) == 0
     actual = json.loads((tmp_path / "active_meta_tools.json").read_text())
@@ -72,7 +65,7 @@ def test_short_names_preserve_contracts(tmp_path):
     original = FIXTURES / "branched_catalog_before_migration.json"
     assert main([
         "extract", "--traces", str(FIXTURES / "branched_traces.json"),
-        "--baseline-config", str(FIXTURES / "branched_config.json"),
+        "--config", str(FIXTURES / "branched_config.json"),
         "--out", str(tmp_path), "--also-raw", "--max-len", "4",
         "--naming", "stable-short",
     ]) == 0
@@ -99,7 +92,7 @@ def test_graph_plus_raw_reports_every_assessment(tmp_path, monkeypatch):
         monkeypatch.setattr(cli, name, wrapped)
     assert cli.main([
         "extract", "--traces", str(FIXTURES / "branched_traces.json"),
-        "--baseline-config", str(FIXTURES / "branched_config.json"),
+        "--config", str(FIXTURES / "branched_config.json"),
         "--out", str(tmp_path), "--source", "graph", "--also-raw", "--max-len", "4",
     ]) == 0
     summary = json.loads((tmp_path / "extraction_summary.json").read_text())
