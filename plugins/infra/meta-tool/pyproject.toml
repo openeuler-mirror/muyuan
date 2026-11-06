@@ -15,9 +15,11 @@ dependencies = ["jsonschema>=4.20,<5", "referencing>=0.30,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+codex = ["mcp>=1.29,<2"]
 
 [project.scripts]
 bate = "bate.cli:main"
+bate-codex = "bate.codex.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

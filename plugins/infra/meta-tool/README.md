@@ -17,6 +17,10 @@ policy and optional bounded read compositions.
 The [Pi adapter](integrations/pi-meta-tool/README.md) adds Static and Online
 operation, live trajectory collection, versioned catalogs, search/run tools
 and default 2/3/4-read batching, including worker extension propagation.
+The [Codex adapter](integrations/codex/README.md) provides Static catalogs and
+Online learning from explicitly configured rollouts over read-only stdio MCP
+primitives. It has stable search/run tools and optional file-read bindings;
+it does not emulate native shell or patch tools.
 BATE and its older optimized predecessor share contracts, not their candidate
 selection algorithm. A normalization-rule optimization loop is not included.
 

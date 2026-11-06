@@ -1,0 +1,21 @@
+{
+  "catalog": "./active_meta_tools.json",
+  "timeout_seconds": 30,
+  "approved_meta_tools": {},
+  "servers": {
+    "inventory": {
+      "command": "/absolute/path/to/python",
+      "args": ["/absolute/path/to/inventory_mcp.py"],
+      "cwd": ".",
+      "env_vars": []
+    }
+  },
+  "bindings": {
+    "mcp__inventory__lookup_customer": {
+      "server": "inventory", "tool": "lookup_customer", "read_only": true
+    },
+    "mcp__inventory__lookup_order": {
+      "server": "inventory", "tool": "lookup_order", "read_only": true
+    }
+  }
+}
