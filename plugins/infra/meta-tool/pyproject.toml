@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "meta-tool-online"
 version = "1.0.0"
-description = "Core contracts and validated deterministic runtime for BATE meta-tools"
+description = "Contracts, normalization, state graphs and validated runtime for BATE meta-tools"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [

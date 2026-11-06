@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .models import Trace
+from .normalization import NormalizationConfig
 from .spec import MetaToolSpec
 
 
@@ -41,6 +42,16 @@ def load_traces(path: str | Path) -> list[Trace]:
         traces.append(Trace.from_dict(record, default_id=f"trace-{index:04d}"))
     _validate_trace_ids(traces)
     return traces
+
+
+def load_config(path: str | Path | None) -> NormalizationConfig:
+    if path is None:
+        return NormalizationConfig()
+    with Path(path).open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, Mapping):
+        raise ValueError("Normalization config must be a JSON object")
+    return NormalizationConfig.from_dict(payload)
 
 
 def load_specs(path: str | Path) -> list[MetaToolSpec]:
