@@ -12,6 +12,8 @@ extraction (BATE) plugin. It provides:
 The BATE extractor groups observed complete sequences, checks cross-occurrence
 data flow, compiles portable templates and assigns content-based short names.
 The [extraction guide](docs/extraction.md) describes Static catalog generation.
+The [dispatch guide](docs/safe-dispatch.md) covers host admission, execution
+policy and optional bounded read compositions.
 BATE and its older optimized predecessor share contracts, not their candidate
 selection algorithm. A normalization-rule optimization loop is not included.
 

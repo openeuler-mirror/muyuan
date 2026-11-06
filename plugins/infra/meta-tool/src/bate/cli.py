@@ -46,6 +46,9 @@ def main(argv=None, *, on_templates=None):
     parser = argparse.ArgumentParser(prog="bate", description=__doc__)
     parser.add_argument("--version", action="version", version=f"meta-tool-online {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
+    reads = sub.add_parser("extract-read-batches", help="Extract caller-planned read compositions")
+    reads.add_argument("--traces", required=True, type=Path)
+    reads.add_argument("--out", required=True, type=Path)
     ex = sub.add_parser("extract", help="Extract and compile BATE workflows")
     ex.add_argument("--traces", required=True, type=Path)
     ex.add_argument("--out", required=True, type=Path)
@@ -66,6 +69,15 @@ def main(argv=None, *, on_templates=None):
     # Compatibility with existing host invocations; no old baseline exists here.
     ex.add_argument("--no-baseline", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.command == "extract-read-batches":
+        from .read_batches import extract_read_batches
+        from .io import write_json
+        specs, report = extract_read_batches(load_traces(args.traces))
+        args.out.mkdir(parents=True, exist_ok=True)
+        write_json(args.out / "meta_tools.json", {"meta_tools": [s.to_dict() for s in specs]})
+        write_json(args.out / "report.json", report)
+        print(json.dumps({"meta_tools": len(specs), **report}))
+        return 0
     if args.min_len < 2 or args.max_len < args.min_len or args.max_meta_tools < 1:
         parser.error("require 2 <= min-len <= max-len and max-meta-tools >= 1")
     traces = load_traces(args.traces)
