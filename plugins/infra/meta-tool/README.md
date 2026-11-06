@@ -9,11 +9,11 @@ extraction (BATE) plugin. It provides:
 - deterministic synchronous and asynchronous execution of primitive tools;
 - full JSON Schema validation before the first primitive is called.
 
-This change does **not** implement automatic extraction, Static/Online learning,
-Pi/MCP integration, worker propagation, or read batching. Those features belong
-to separate changes. BATE and its older optimized predecessor share these
-contracts, not their candidate-selection algorithm. A normalization-rule
-optimization loop is not part of this package.
+The BATE extractor groups observed complete sequences, checks cross-occurrence
+data flow, compiles portable templates and assigns content-based short names.
+The [extraction guide](docs/extraction.md) describes Static catalog generation.
+BATE and its older optimized predecessor share contracts, not their candidate
+selection algorithm. A normalization-rule optimization loop is not included.
 
 The distribution name `meta-tool-online` is retained. The Python package has
 moved from `awo` to `bate`: update imports and `python -m awo` invocations to
@@ -31,8 +31,8 @@ python3 -m bate
 python3 -m pytest
 ```
 
-`python3 -m bate` prints package identity/version only; it is not an extraction
-CLI and does not launch an agent.
+`python3 -m bate` prints package identity/version. `bate extract --help` (also
+`python3 -m bate extract --help`) describes extraction; it does not launch an agent.
 
 ## Normalize traces and build a state graph
 

@@ -74,7 +74,7 @@ def test_package_identity_and_entry_point(tmp_path):
     assert issubclass(MetaToolValidationError, ValueError)
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-c",
-         "import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_module('bate',run_name='__main__')",
+         "import sys,runpy;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('bate',run_name='__main__')",
          str(ROOT / "src")],
         cwd=tmp_path, capture_output=True, text=True, timeout=20,
     )

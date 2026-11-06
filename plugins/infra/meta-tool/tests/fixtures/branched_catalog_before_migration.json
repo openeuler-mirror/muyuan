@@ -1,0 +1,208 @@
+{
+  "meta_tools": [
+    {
+      "name": "meta_tool_01_lookup_customer_lookup_invoice_read_record_f73060a5",
+      "description": "Deterministic meta-tool: lookup_customer -> lookup_invoice -> read_record. Discovered in 3 executions.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Value for lookup_customer argument email"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "steps": [
+        {
+          "id": "step_1",
+          "tool": "lookup_customer",
+          "arguments": {
+            "email": {
+              "$input": "email"
+            }
+          }
+        },
+        {
+          "id": "step_2",
+          "tool": "lookup_invoice",
+          "arguments": {
+            "customer_id": {
+              "$step": "step_1",
+              "path": [
+                "customer_id"
+              ]
+            }
+          }
+        },
+        {
+          "id": "step_3",
+          "tool": "read_record",
+          "arguments": {
+            "record_id": {
+              "$step": "step_2",
+              "path": [
+                "record_id"
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "$step": "step_3",
+        "path": []
+      },
+      "metadata": {
+        "source": "arXiv:2601.22037 independent implementation",
+        "candidate_id": "meta_tool_01_lookup_customer_lookup_invoice_read_record_f73060a5",
+        "workflow_fingerprint": "ecabf790fe15f065b7d14be46d1fd9d74b36af67f4953f19ed3d9ebca4a69764",
+        "support": 3,
+        "occurrences": 3,
+        "sequence_purity": 1.0,
+        "min_branch_dominance": 1.0,
+        "estimated_incremental_decisions_saved": 2,
+        "observed_llm_turn_occurrences": 0,
+        "llm_turn_coverage": 0.0,
+        "observed_incremental_llm_calls_saved": 0,
+        "mean_llm_calls_saved_per_observed_occurrence": 0.0,
+        "step_semantic_types": [
+          "accessor",
+          "accessor",
+          "accessor"
+        ],
+        "side_effect_free": true,
+        "start_index": 0,
+        "end_index": 2,
+        "n_steps": 3,
+        "internal_data_flows": 2,
+        "varying_data_flows": 2,
+        "constant_data_flows": 0,
+        "runtime_local_data_flows": 0,
+        "caller_parameters": 1,
+        "free_text_parameters": 0,
+        "constant_arguments": 0,
+        "observed_internal_data_flows": 2,
+        "data_flow_connected": true,
+        "has_varying_data_flow": true,
+        "stable_runtime_data_flows": 0,
+        "runtime_local_data_flow_verified": false,
+        "runtime_local_input_count": 0,
+        "data_flow_evidence": "verified_across_all_supporting_occurrences",
+        "caller_input_count": 1,
+        "free_text_input_count": 0,
+        "free_text_inputs": [],
+        "source_trace_ids": [
+          "lookup_invoice-0",
+          "lookup_invoice-1",
+          "lookup_invoice-2"
+        ],
+        "requires_domain_review": true
+      }
+    },
+    {
+      "name": "meta_tool_02_lookup_customer_lookup_order_read_record_f515810b",
+      "description": "Deterministic meta-tool: lookup_customer -> lookup_order -> read_record. Discovered in 3 executions.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Value for lookup_customer argument email"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "steps": [
+        {
+          "id": "step_1",
+          "tool": "lookup_customer",
+          "arguments": {
+            "email": {
+              "$input": "email"
+            }
+          }
+        },
+        {
+          "id": "step_2",
+          "tool": "lookup_order",
+          "arguments": {
+            "customer_id": {
+              "$step": "step_1",
+              "path": [
+                "customer_id"
+              ]
+            }
+          }
+        },
+        {
+          "id": "step_3",
+          "tool": "read_record",
+          "arguments": {
+            "record_id": {
+              "$step": "step_2",
+              "path": [
+                "record_id"
+              ]
+            }
+          }
+        }
+      ],
+      "output": {
+        "$step": "step_3",
+        "path": []
+      },
+      "metadata": {
+        "source": "arXiv:2601.22037 independent implementation",
+        "candidate_id": "meta_tool_02_lookup_customer_lookup_order_read_record_f515810b",
+        "workflow_fingerprint": "4e382fdf5eabfd6775e936e583f9166dc85dd63e823e5be534641b0456af9962",
+        "support": 3,
+        "occurrences": 3,
+        "sequence_purity": 1.0,
+        "min_branch_dominance": 1.0,
+        "estimated_incremental_decisions_saved": 2,
+        "observed_llm_turn_occurrences": 0,
+        "llm_turn_coverage": 0.0,
+        "observed_incremental_llm_calls_saved": 0,
+        "mean_llm_calls_saved_per_observed_occurrence": 0.0,
+        "step_semantic_types": [
+          "accessor",
+          "accessor",
+          "accessor"
+        ],
+        "side_effect_free": true,
+        "start_index": 0,
+        "end_index": 2,
+        "n_steps": 3,
+        "internal_data_flows": 2,
+        "varying_data_flows": 2,
+        "constant_data_flows": 0,
+        "runtime_local_data_flows": 0,
+        "caller_parameters": 1,
+        "free_text_parameters": 0,
+        "constant_arguments": 0,
+        "observed_internal_data_flows": 2,
+        "data_flow_connected": true,
+        "has_varying_data_flow": true,
+        "stable_runtime_data_flows": 0,
+        "runtime_local_data_flow_verified": false,
+        "runtime_local_input_count": 0,
+        "data_flow_evidence": "verified_across_all_supporting_occurrences",
+        "caller_input_count": 1,
+        "free_text_input_count": 0,
+        "free_text_inputs": [],
+        "source_trace_ids": [
+          "lookup_order-0",
+          "lookup_order-1",
+          "lookup_order-2"
+        ],
+        "requires_domain_review": true
+      }
+    }
+  ]
+}

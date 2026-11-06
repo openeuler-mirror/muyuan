@@ -1,0 +1,220 @@
+{
+  "traces": [
+    {
+      "trace_id": "lookup_order-0",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_order-0@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_order-0"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_order",
+          "arguments": {
+            "customer_id": "customer-lookup_order-0"
+          },
+          "result": {
+            "record_id": "record-lookup_order-0"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_order-0"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    },
+    {
+      "trace_id": "lookup_order-1",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_order-1@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_order-1"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_order",
+          "arguments": {
+            "customer_id": "customer-lookup_order-1"
+          },
+          "result": {
+            "record_id": "record-lookup_order-1"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_order-1"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    },
+    {
+      "trace_id": "lookup_order-2",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_order-2@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_order-2"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_order",
+          "arguments": {
+            "customer_id": "customer-lookup_order-2"
+          },
+          "result": {
+            "record_id": "record-lookup_order-2"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_order-2"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    },
+    {
+      "trace_id": "lookup_invoice-0",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_invoice-0@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_invoice-0"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_invoice",
+          "arguments": {
+            "customer_id": "customer-lookup_invoice-0"
+          },
+          "result": {
+            "record_id": "record-lookup_invoice-0"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_invoice-0"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    },
+    {
+      "trace_id": "lookup_invoice-1",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_invoice-1@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_invoice-1"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_invoice",
+          "arguments": {
+            "customer_id": "customer-lookup_invoice-1"
+          },
+          "result": {
+            "record_id": "record-lookup_invoice-1"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_invoice-1"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    },
+    {
+      "trace_id": "lookup_invoice-2",
+      "success": true,
+      "calls": [
+        {
+          "name": "lookup_customer",
+          "arguments": {
+            "email": "lookup_invoice-2@example.test"
+          },
+          "result": {
+            "customer_id": "customer-lookup_invoice-2"
+          },
+          "turn_id": 0
+        },
+        {
+          "name": "lookup_invoice",
+          "arguments": {
+            "customer_id": "customer-lookup_invoice-2"
+          },
+          "result": {
+            "record_id": "record-lookup_invoice-2"
+          },
+          "turn_id": 1
+        },
+        {
+          "name": "read_record",
+          "arguments": {
+            "record_id": "record-lookup_invoice-2"
+          },
+          "result": {
+            "status": "ready"
+          },
+          "turn_id": 2
+        }
+      ]
+    }
+  ]
+}
