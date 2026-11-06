@@ -14,6 +14,9 @@ data flow, compiles portable templates and assigns content-based short names.
 The [extraction guide](docs/extraction.md) describes Static catalog generation.
 The [dispatch guide](docs/safe-dispatch.md) covers host admission, execution
 policy and optional bounded read compositions.
+The [Pi adapter](integrations/pi-meta-tool/README.md) adds Static and Online
+operation, live trajectory collection, versioned catalogs, search/run tools
+and default 2/3/4-read batching, including worker extension propagation.
 BATE and its older optimized predecessor share contracts, not their candidate
 selection algorithm. A normalization-rule optimization loop is not included.
 
