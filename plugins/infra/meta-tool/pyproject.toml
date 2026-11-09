@@ -24,6 +24,9 @@ bate-codex = "bate.codex.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"bate.codex" = ["skills/meta-tool/SKILL.md", "skills/meta-tool/agents/openai.yaml"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

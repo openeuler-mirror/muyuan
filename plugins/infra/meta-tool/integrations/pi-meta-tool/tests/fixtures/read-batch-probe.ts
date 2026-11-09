@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const extension = resolve(dirname(fileURLToPath(import.meta.url)), "../../extensions/meta-tool.ts");
+const extension = process.env.BATE_READ_BATCH_PROBE_EXTENSION ??
+	resolve(dirname(fileURLToPath(import.meta.url)), "../../extensions/meta-tool.ts");
 const source = fileURLToPath(import.meta.url);
 
 export default function probe(pi: any) {
 	pi.on("before_provider_request", () => { throw new Error("Provider calls forbidden by read-batch probe"); });
 	pi.on("input", async (_event: any, ctx: any) => {
 		try {
+			assert(pi.getCommands().some((command: any) => command.name === "meta-tool"),
+				"/meta-tool command was not registered");
 			const disabled = process.env.BATE_READ_BATCH_PROBE_DISABLED === "1";
 			const active = pi.getActiveTools();
 			assert.equal(active.includes("meta_tool_read_batch"), !disabled);

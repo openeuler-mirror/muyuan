@@ -1,5 +1,8 @@
 # Meta-tool / BATE Core
 
+[中文安装与使用说明](README_zh.md) includes one-command project installation,
+the Codex `meta-tool` skill and live session controls.
+
 This is the independently usable foundation of the branch-aware template
 extraction (BATE) plugin. It provides:
 
@@ -32,7 +35,20 @@ No sibling algorithm repository or absolute filesystem path is required.
 
 ## Install and verify
 
-Python 3.11+ is required. Install the package and its test dependencies:
+From this directory, install for either host (Linux/macOS, Python 3.11+):
+
+```bash
+python3 install.py --pi --project /absolute/path/to/your/project
+python3 install.py --codex --project /absolute/path/to/your/project
+```
+
+Both flags can be combined. `bash install.sh` accepts the same arguments.
+Pi additionally requires Node.js 22.18+ and npm. The installer prepares runtime
+dependencies and project registration; it does not install Pi/Codex themselves.
+Open a new trusted project session: Pi `/meta-tool`; Codex select `meta-tool`
+from the skill menu or use `$meta-tool on`. See [installation details](README_zh.md).
+
+For development, install the package and its test dependencies:
 
 ```bash
 python3 -m pip install -e '.[dev]'

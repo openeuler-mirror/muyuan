@@ -1,5 +1,30 @@
 # Codex: Static / Online
 
+## 快速安装与会话入口
+
+从插件根目录运行：
+
+```bash
+python3 install.py --codex --project /absolute/path/to/your/project
+```
+
+与 Pi 共用根目录安装入口（`--pi` / `--codex`，也支持 `bash install.sh`）。
+这会创建项目本地 Skill＋MCP 插件、`.meta-tool/.venv/` Python 环境和有界只读文件服务。
+新会话在 `/` 菜单选择 `meta-tool`，或使用 `$meta-tool on` / `off` /
+`static` / `online` / `status`。CLI 也可通过 `/skills` 选择。
+新安装默认关闭；裸 `/meta-tool` 是否被识别取决于客户端菜单，未修改 Codex 内置命令。
+安装不修改全局设置或项目信任。完整步骤见 [中文说明](../../README_zh.md)。
+
+Skill 调用 `meta_tool_control` 控制本 MCP 连接；关闭会阻止新执行和学习，
+等待在途工作结束。Static 保留当前目录并暂停学习。状态在服务重启后恢复配置默认值。
+Online 必须先通过安装参数 `--trace-file` 或配置给出明确轨迹来源，默认不扫描历史。
+
+手动配置也可设置 `session_control: true` 暴露控制工具，设置 `start_enabled: false`
+使服务等待显式启用。原手动配置不设置这两项时，仍保持旧的工具列表和启动行为。
+设置了控制入口的服务使用固定 search/run 接口，切换模式无需刷新模型工具列表。
+
+## 手动 MCP 接入
+
 独立的 Codex MCP 适配层，调用本插件的 BATE 提取、编译和运行时，不依赖 Pi。
 支持上游 **stdio MCP 的只读 primitives**，不模拟原生 `exec_command`、
 `apply_patch` 或它们的权限。适配器自身不调用模型，不需要模型 API key。

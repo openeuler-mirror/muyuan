@@ -1,0 +1,4 @@
+interface:
+  display_name: "meta-tool"
+  short_description: "Control BATE workflows and project batch reads"
+  default_prompt: "Use $meta-tool status to inspect BATE in this conversation."

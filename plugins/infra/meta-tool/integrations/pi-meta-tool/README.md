@@ -9,6 +9,29 @@ An optional read-only CLI observer supplies aligned occurrence evidence to the
 adapter. LLM-turn savings are calculated from recorded turn IDs, not inferred
 from the number of tool calls. Default CLI output remains unchanged.
 
+## One-command project installation
+
+From the plugin root, use the same installer as Codex:
+
+```bash
+python3 install.py --pi --project /absolute/path/to/your/project
+# Equivalent: bash install.sh --pi --project /absolute/path/to/your/project
+cd /absolute/path/to/your/project
+pi
+```
+
+Requires Python 3.11+, Node.js 22.18+, npm and Pi. The installer prepares a
+project-local Python environment, copies this adapter, installs locked npm
+dependencies, and registers it in `.pi/settings.json`. No manual `--extension`
+is needed. Pi still applies its normal project trust rules. Use `/meta-tool`
+in the session. Existing model settings and learning policy are preserved.
+See the [Chinese guide](../../README_zh.md) for generated paths and conflicts.
+Add `--codex` to install both hosts. Close running sessions before reinstalling;
+both hosts share the Python runtime. Global host settings are not modified.
+
+For development, the explicit source-loading route is still available (start
+from the plugin root):
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
@@ -17,8 +40,8 @@ npm ci --ignore-scripts
 pi --extension "$PWD/extensions/meta-tool.ts"
 ```
 
-For Goal-Plus, explicitly load this extension alongside the selected Goal-Plus
-extension. The local `bin/pi` propagates it to native Pi workers. Validate worker
+For Goal-Plus, load the selected Goal-Plus extension alongside this installed
+package (or the source extension in development). The local `bin/pi` propagates it to native Pi workers. Validate worker
 tool registration before using a real model. Do not also load a different
 meta-tool package from global Pi settings.
 

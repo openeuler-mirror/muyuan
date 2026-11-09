@@ -52,12 +52,16 @@ def load_settings(path: str | Path) -> dict:
         settings["catalog"] = str((path.parent / settings["catalog"]).resolve())
     if not isinstance(settings.setdefault("batch_enabled", True), bool):
         raise ValueError("batch_enabled must be a boolean")
-    if mode == "online":
+    for key, default in (("session_control", False), ("start_enabled", True)):
+        if not isinstance(settings.setdefault(key, default), bool):
+            raise ValueError(f"{key} must be a boolean")
+    if mode == "online" or "online" in settings:
         online = settings.get("online")
         if not isinstance(online, dict):
             raise ValueError("online mode requires online configuration")
         paths = online.get("trace_files")
-        if not isinstance(paths, list) or not 1 <= len(paths) <= 64 or not all(isinstance(p, str) and p for p in paths):
+        minimum = 1 if mode == "online" else 0
+        if not isinstance(paths, list) or not minimum <= len(paths) <= 64 or not all(isinstance(p, str) and p for p in paths):
             raise ValueError("online.trace_files must name 1 to 64 explicit rollout files")
         online["trace_files"] = sorted({str((path.parent / p).resolve()) for p in paths})
         state = online.get("state_dir")
@@ -115,6 +119,11 @@ class CatalogService:
         self.active: dict[str, MetaToolSpec] = {}
         self.rejected: list[dict] = []
         self._lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self.enabled = settings.get("start_enabled", True)
+        self.mode = settings.get("mode", "static")
+        # Runtime switches are local to this MCP connection; config remains immutable.
+        self.batch_enabled = settings.get("batch_enabled", True)
         names = [spec.name for spec in specs]
         if len(names) != len(set(names)):
             raise ValueError("Duplicate meta-tool names in catalog")
@@ -135,7 +144,7 @@ class CatalogService:
         from ..naming import assign_short_names
         self.automatic = {}
         catalog = {}
-        if self.settings.get("batch_enabled", True) and "read" in self.allowed_reads():
+        if self.batch_enabled and "read" in self.allowed_reads():
             for size in (2, 3, 4):
                 schema, steps, output = read_batch_layout(size)
                 spec = assign_short_names([MetaToolSpec(
@@ -158,14 +167,54 @@ class CatalogService:
         self.admit()
 
     async def refresh(self):
+        async with self._lifecycle_lock:
+            if self.enabled and self.mode == "online" and self.learner is not None:
+                await self.learner.refresh(self.allowed_reads())
+                self.rebuild()
+
+    def start_learner(self):
         if self.learner is not None:
-            await self.learner.refresh(self.allowed_reads())
+            return
+        if not self.settings.get("online", {}).get("trace_files"):
+            raise ValueError("online_sources_not_configured")
+        from .online import OnlineLearner
+        learner = OnlineLearner(self.settings)
+        try:
+            learner.restore()
+        except BaseException:
+            learner.close()
+            raise
+        self.learner = learner
+
+    def close(self):
+        if self.learner is not None:
+            self.learner.close()
+
+    async def control(self, action: str):
+        if not self.settings.get("session_control", False):
+            raise ValueError("session_control_not_enabled")
+        if action not in {"status", "on", "off", "static", "online", "batch_on", "batch_off"}:
+            raise ValueError("unknown_control_action")
+        # Wait for in-flight learning/execution. After off returns, no queued
+        # execution can start and no background refresh can publish a new version.
+        async with self._lifecycle_lock, self._lock:
+            if action == "online" or (action == "on" and self.mode == "online"):
+                self.start_learner()  # Fail before changing the previous mode/state.
+            if action in {"on", "static", "online"}:
+                self.enabled = True
+            elif action == "off":
+                self.enabled = False
+            if action in {"static", "online"}:
+                self.mode = action
+            if action in {"batch_on", "batch_off"}:
+                self.batch_enabled = action == "batch_on"
             self.rebuild()
+            return self.describe()
 
     async def learn_forever(self):
         while True:
             await self.refresh()
-            await asyncio.sleep(self.settings["online"]["poll_seconds"])
+            await asyncio.sleep(self.settings.get("online", {}).get("poll_seconds", 2))
 
     async def _list_tools(self, server: str) -> dict:
         result = {}
@@ -212,7 +261,7 @@ class CatalogService:
         for spec in self.specs:
             reasons = []
             if (not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", spec.name)
-                    or spec.name in {"bate_catalog", "meta_tool_search", "meta_tool_run", "meta_tool_read_batch"}):
+                    or spec.name in {"bate_catalog", "meta_tool_search", "meta_tool_run", "meta_tool_read_batch", "meta_tool_control"}):
                 reasons.append("invalid/reserved MCP name; extract with --naming stable-short")
             if (approved.get(spec.name) != template_fingerprint(spec)
                     and self.automatic.get(spec.name) != template_fingerprint(spec)):
@@ -244,7 +293,11 @@ class CatalogService:
 
     def describe(self) -> dict:
         return {
-            "adapter": "bate-codex-mcp-v2", "mode": self.settings.get("mode", "static"),
+            "adapter": "bate-codex-mcp-v2", "mode": self.mode,
+            "enabled": self.enabled, "batch_enabled": self.batch_enabled,
+            "session_control": self.settings.get("session_control", False),
+            "control_scope": "this MCP connection; resets on server restart",
+            "online_available": bool(self.settings.get("online", {}).get("trace_files")),
             "active": [{"name": spec.name, "description": spec.description,
                         "fingerprint": template_fingerprint(spec),
                         "primitives": [step.tool for step in spec.steps]}
@@ -257,10 +310,10 @@ class CatalogService:
 
     def search(self, query="", limit=5):
         words = set(query.lower().split())
-        ranked = sorted(self.active.values(), key=lambda s: (
+        ranked = sorted(self.active.values() if self.enabled else [], key=lambda s: (
             -sum(w in (s.name + " " + s.description + " " + " ".join(x.tool for x in s.steps)).lower()
                  for w in words), s.name))
-        return {"version": self.learner.version if self.learner else "static",
+        return {"enabled": self.enabled, "version": self.learner.version if self.learner else "static",
                 "meta_tools": [{"name": s.name, "description": s.description,
                     "fingerprint": template_fingerprint(s), "input_schema": dict(s.input_schema),
                     "steps": [x.tool for x in s.steps]} for s in ranked[:limit]]}
@@ -271,12 +324,12 @@ class CatalogService:
         schema, steps, output = read_batch_layout(len(ranges))
         prototype = assign_short_names([MetaToolSpec(name="batch", description="batch",
             input_schema=schema, steps=steps, output=output)])[0]
-        if not self.settings.get("batch_enabled", True):
+        if not self.batch_enabled:
             raise ValueError("Batch reads are disabled")
         inputs = {f"{key}_{i}": value for i, row in enumerate(ranges, 1) for key, value in row.items()}
-        return await self.execute(prototype.name, inputs)
+        return await self.execute(prototype.name, inputs, _batch=True)
 
-    async def execute(self, name: str, arguments: dict, fingerprint: str | None = None) -> dict:
+    async def execute(self, name: str, arguments: dict, fingerprint: str | None = None, *, _batch=False) -> dict:
         from jsonschema import Draft202012Validator
 
         if name not in self.active:
@@ -289,6 +342,12 @@ class CatalogService:
         # No automatic retry or primitive fallback: partial execution must not
         # be silently repeated. Serialize executions against one upstream set.
         async with self._lock, asyncio.timeout(self.settings["timeout_seconds"]):
+            if not self.enabled:
+                raise ValueError("Meta-tools are disabled; use meta_tool_control on")
+            if _batch and not self.batch_enabled:
+                raise ValueError("Batch reads are disabled")
+            if name not in self.active:
+                raise ValueError("Meta-tool is no longer active")
             needed = {step.tool for step in spec.steps}
             live = {}
             for server in {self.settings["bindings"][key]["server"] for key in needed}:
@@ -353,6 +412,15 @@ def create_server(service: CatalogService):
         "meta_tool_run": "Run a complete read-only workflow using the name, fingerprint and inputs from search.",
         "meta_tool_read_batch": "Read 2–4 file ranges known in advance using the configured read MCP primitive (300 lines each).",
     }
+    if service.settings.get("session_control", False):
+        schemas["meta_tool_control"] = {
+            "type": "object", "properties": {"action": {"type": "string", "enum": [
+                "status", "on", "off", "static", "online", "batch_on", "batch_off"]}},
+            "required": ["action"], "additionalProperties": False}
+        descriptions["meta_tool_control"] = (
+            "Control this BATE connection when the user asks: status, on/off, static/online, "
+            "batch_on/batch_off. Off stops execution and learning after in-flight work completes. "
+            "Online requires operator-configured trace files. Never enable implicitly after user off.")
     server = Server("bate-codex", version="1.0.0", instructions=(
         "Use a BATE meta-tool only when its complete fixed sequence matches the user's task. "
         "Search the current catalog with meta_tool_search, then call meta_tool_run with its fingerprint. "
@@ -363,13 +431,16 @@ def create_server(service: CatalogService):
     @server.list_tools()
     async def list_tools():
         annotation = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True)
-        controls = [Tool(name=name, description=descriptions[name], inputSchema=schema, annotations=annotation)
+        controls = [Tool(name=name, description=descriptions[name], inputSchema=schema,
+                         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+                         if name == "meta_tool_control" else annotation)
                     for name, schema in schemas.items()
                     if name != "meta_tool_read_batch" or
-                       (service.settings.get("batch_enabled", True) and "read" in service.allowed_reads())]
+                       ((service.batch_enabled or service.settings.get("session_control", False))
+                        and "read" in service.allowed_reads())]
         # Static retains its direct per-template MCP tools. Online discovery is
         # through stable controls, independent of host tools/list caching.
-        direct = service.active.values() if service.settings.get("mode", "static") == "static" else []
+        direct = service.active.values() if service.mode == "static" and not service.settings.get("session_control", False) else []
         return controls + [Tool(
             name=spec.name,
             description=(spec.description or "Execute a reviewed BATE template")
@@ -382,6 +453,15 @@ def create_server(service: CatalogService):
         try:
             if name in schemas:
                 validate_inputs(schemas[name], arguments)
+            if name == "meta_tool_control" and name in schemas:
+                try:
+                    return await service.control(arguments["action"])
+                except ValueError as error:
+                    if str(error) == "online_sources_not_configured":
+                        return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps({
+                            "error": "online_sources_not_configured",
+                            "hint": "Configure explicit online.trace_files, then restart the MCP server."}))])
+                    raise
             # Background polling publishes between calls. A catalog/search
             # request also flushes pending evidence for short-lived sessions.
             if name in {"bate_catalog", "meta_tool_search"}:
@@ -422,14 +502,12 @@ async def run_server(config_path: str | Path, *, check: bool = False) -> dict | 
         await service.connect(stack)
         if check:
             return service.describe()
-        if settings["mode"] == "online":
-            from .online import OnlineLearner
-            service.learner = OnlineLearner(settings)
-            stack.callback(service.learner.close)
-            service.learner.restore()
+        stack.callback(service.close)
+        if settings["mode"] == "online" and service.enabled:
+            service.start_learner()
             service.rebuild()
         server = create_server(service)
-        learning = asyncio.create_task(service.learn_forever()) if service.learner else None
+        learning = asyncio.create_task(service.learn_forever()) if settings.get("online") else None
         try:
             async with stdio_server() as (reader, writer):
                 await server.run(reader, writer, server.create_initialization_options())
