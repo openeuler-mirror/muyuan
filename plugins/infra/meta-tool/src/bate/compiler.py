@@ -306,16 +306,18 @@ class MetaToolCompiler:
 def _leaf_paths(
     value: Any, prefix: tuple[str | int, ...] = ()
 ) -> list[tuple[str | int, ...]]:
+    # Nested empty containers are values, not absent fields. An empty root
+    # argument object has no fields to parameterize.
     if isinstance(value, Mapping):
         paths: list[tuple[str | int, ...]] = []
         for key in sorted(value, key=str):
             paths.extend(_leaf_paths(value[key], prefix + (str(key),)))
-        return paths
+        return paths or ([prefix] if prefix else [])
     if isinstance(value, (list, tuple)):
         paths = []
         for index, item in enumerate(value):
             paths.extend(_leaf_paths(item, prefix + (index,)))
-        return paths
+        return paths or ([prefix] if prefix else [])
     return [prefix]
 
 

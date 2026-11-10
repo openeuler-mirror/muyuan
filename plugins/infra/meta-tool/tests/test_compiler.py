@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from pathlib import Path
 
 from bate.compiler import CompilerOptions, MetaToolCompiler
@@ -41,6 +42,29 @@ def _employee_result():
         examples=examples,
     )
     return SimpleNamespace(specs=[MetaToolCompiler().compile(candidate)])
+
+
+def test_empty_container_type_changes_are_parameterized():
+    traces = [Trace(f"t-{i}", (
+        ToolCall("lookup", {}, {"id": f"item-{i}"}),
+        ToolCall("read", {"id": f"item-{i}", "options": options}),
+    )) for i, options in enumerate([[], {}, []])]
+    spec = _compile_traces(traces).specs[0]
+    assert spec.steps[1].arguments["options"] == {"$input": "options"}
+    assert set(spec.input_schema["properties"]["options"]["type"]) == {"array", "object"}
+    executor = MetaToolExecutor({"lookup": lambda: {"id": "live"},
+                                 "read": lambda id, options: options})
+    for value in [[], {}]:
+        assert executor.execute(spec, {"options": value}).output == value
+
+
+@pytest.mark.parametrize("options", [[], {}])
+def test_empty_container_and_missing_field_are_inconsistent(options):
+    traces = [Trace("present", (ToolCall("lookup", {}), ToolCall("read", {"options": options}))),
+              Trace("absent", (ToolCall("lookup", {}), ToolCall("read", {})))]
+    spec = _compile_traces(traces).specs[0]
+    assert any("inconsistent argument shapes" in warning
+               for warning in spec.metadata["compiler_warnings"])
 
 
 def test_compiler_infers_inputs_and_result_dependencies():

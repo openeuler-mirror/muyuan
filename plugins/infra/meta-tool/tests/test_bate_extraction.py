@@ -115,3 +115,25 @@ def test_sources_and_integrations_have_no_external_algorithm_dependency():
         for path in folder.rglob("*.sh"):
             assert "AWO_ROOT" not in path.read_text(), path
             assert "meta-tool-online-optimized" not in path.read_text(), path
+
+
+@pytest.mark.parametrize("source,extra", [("raw", []), ("graph", []), ("graph", ["--also-raw"])])
+@pytest.mark.parametrize("keep_nested", [False, True])
+def test_uncompilable_extension_does_not_hide_usable_prefix(tmp_path, source, extra, keep_nested):
+    traces = {"traces": [{"trace_id": f"t-{i}", "success": True, "calls": [
+        {"name": "lookup", "arguments": {}, "result": {"id": f"item-{i}"}, "turn_id": 0},
+        {"name": "read", "arguments": {"id": f"item-{i}"},
+         "result": {"token": f"token-{i}"}, "turn_id": 1},
+        {"name": "inspect", "arguments": {"token": f"token-{i}", "ref": "stale-ref"},
+         "result": {}, "turn_id": 2},
+    ]} for i in range(3)]}
+    path = tmp_path / "traces.json"
+    path.write_text(json.dumps(traces))
+    out = tmp_path / "out"
+    assert main([
+        "extract", "--traces", str(path), "--out", str(out),
+        "--config", str(FIXTURES / "branched_config.json"), "--source", source,
+        "--max-meta-tools", "1", *extra, *(["--keep-nested"] if keep_nested else []),
+    ]) == 0
+    specs = json.loads((out / "meta_tools.json").read_text())["meta_tools"]
+    assert [[step["tool"] for step in spec["steps"]] for spec in specs] == [["lookup", "read"]]

@@ -60,12 +60,15 @@ def compile_admitted(
     pairs: list[tuple[SequenceCandidate, DeterminismReport]],
     traces,
     norm,
-    *,
-    max_meta_tools: int = 50,
 ) -> list[CompiledTemplate]:
+    """Compile every admitted candidate; executable filtering precedes Top-K."""
     compiler = MetaToolCompiler(CompilerOptions())
     out: list[CompiledTemplate] = []
-    for index, (candidate, report) in enumerate(pairs[:max_meta_tools], start=1):
+    # Graph/raw occurrences of the same sequence share a legacy identifier;
+    # check their executable status before deduplicating them.
+    sequence_indices = {}
+    for candidate, report in pairs:
+        index = sequence_indices.setdefault(candidate.sequence, len(sequence_indices) + 1)
         examples = build_examples(candidate, traces, norm)
         # GraphCandidate carries trace_ids directly and occurrences as a count;
         # SequenceCandidate carries a list of occurrence objects.

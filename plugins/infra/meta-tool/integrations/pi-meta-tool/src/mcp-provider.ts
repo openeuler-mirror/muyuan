@@ -211,7 +211,7 @@ async function connectProvider(
 	}
 
 	const client = new Client(
-		{ name: "pi-meta-tool-online", version: "1.0.0" },
+		{ name: "pi-meta-tool-online", version: "2.0.0" },
 		{
 			versionNegotiation: {
 				mode: "auto",

@@ -20,8 +20,7 @@ if str(META_TOOL_ROOT / "src") not in sys.path:
 
 from bate.dispatch import AccelerationPolicy, DispatchMode, MetaToolDispatcher
 from bate.runtime import ToolRegistry
-from bate.models import Trace
-from bate.io import load_specs, load_traces
+from bate.io import load_specs
 from discovery import discover_online as _discover
 
 LEGACY_SUPPORTED_TOOLS = {"read", "bash", "edit", "write", "grep", "find", "ls"}
@@ -89,31 +88,6 @@ def _require_mapping(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be an object")
     return dict(value)
-
-
-def _string_set_or_default(
-    value: Any, default: set[str] | None = None
-) -> set[str] | None:
-    if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value}
-    return default
-
-
-def _load_payload_traces(payload: Mapping[str, Any]) -> list[Trace]:
-    trace_path = payload.get("tracePath")
-    if isinstance(trace_path, str) and trace_path:
-        return load_traces(trace_path)
-
-    trace_export = _require_mapping(payload.get("trace"), "trace")
-    raw_traces = trace_export.get("traces")
-    if not isinstance(raw_traces, list):
-        raise TypeError("trace.traces must be an array")
-    traces: list[Trace] = []
-    for index, value in enumerate(raw_traces, start=1):
-        if not isinstance(value, Mapping):
-            raise TypeError(f"trace.traces[{index - 1}] must be an object")
-        traces.append(Trace.from_dict(value, default_id=f"pi-trace-{index:04d}"))
-    return traces
 
 
 def _decode_tool_result(value: Any) -> Any:

@@ -42,6 +42,19 @@ def test_detects_only_dependencies_verified_across_every_occurrence():
     assert spans[0].constant_flows == 0
 
 
+def test_empty_containers_are_not_silently_dropped_from_evidence():
+    analysis = analyze_data_flow(_examples([
+        [ToolCall("read", {"options": []})],
+        [ToolCall("read", {"options": {}})],
+    ]))
+    evidence = analysis.argument(0, ("options",))
+    assert evidence is not None and evidence.kind == "free_text"
+    missing = analyze_data_flow(_examples([
+        [ToolCall("read", {"options": []})], [ToolCall("read", {})],
+    ]))
+    assert ("options",) in missing.steps[0].inconsistent_paths
+
+
 def test_constant_equality_is_not_counted_as_varying_flow():
     analysis = analyze_data_flow(
         _examples(

@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { runBridge } from "../src/bridge.ts";
+import { directExecutionAllowed, executeDirectMetaTool } from "../src/direct-execution.ts";
 import { isCallerBoundReadBatch } from "../src/read-batches.ts";
 import { loadExecutionUserCatalog } from "../src/read-batch-catalog.ts";
 import { registerReadBatch } from "./read-batch.ts";
@@ -458,186 +459,6 @@ function unsupportedTools(
 				.filter((name) => !supportedTools.has(name)),
 		),
 	];
-}
-
-type DirectPrimitiveCall = (
-	id: string,
-	name: string,
-	input: Record<string, unknown>,
-) => Promise<unknown>;
-
-class DirectStepOutputPathError extends Error {}
-
-function resolveDirectPath(value: unknown, path: unknown): unknown {
-	if (!Array.isArray(path)) throw new TypeError("A step binding path must be an array");
-	let current = value;
-	for (const part of path) {
-		try {
-			if (Array.isArray(current)) current = current[Number(part)];
-			else if (isRecord(current)) current = current[String(part)];
-			else throw new Error("not an object or array");
-		} catch (error) {
-			throw new DirectStepOutputPathError(
-				`Step output path ${JSON.stringify(path)} is unavailable`,
-				{ cause: error },
-			);
-		}
-		if (current === undefined)
-			throw new DirectStepOutputPathError(
-				`Step output path ${JSON.stringify(path)} is unavailable`,
-			);
-	}
-	return current;
-}
-
-function resolveDirectValue(
-	value: unknown,
-	inputs: Record<string, unknown>,
-	outputs: ReadonlyMap<string, unknown>,
-): unknown {
-	if (Array.isArray(value))
-		return value.map((item) => resolveDirectValue(item, inputs, outputs));
-	if (!isRecord(value)) return value;
-	const keys = Object.keys(value);
-	if (keys.length === 1 && keys[0] === "$input") {
-		const name = String(value.$input);
-		if (!(name in inputs)) throw new Error(`Input ${name} is unavailable`);
-		return inputs[name];
-	}
-	const stepBinding =
-		keys.includes("$step") &&
-		(keys.length === 1 ||
-			(keys.length === 2 && keys.includes("path")) ||
-			(keys.length === 3 && keys.includes("path") && keys.includes("fallback")));
-	if (stepBinding) {
-		const stepId = String(value.$step);
-		if (!outputs.has(stepId))
-			throw new Error(`Step output ${stepId} is unavailable`);
-		try {
-			return resolveDirectPath(outputs.get(stepId), value.path ?? []);
-		} catch (error) {
-			if (!(error instanceof DirectStepOutputPathError) || !("fallback" in value))
-				throw error;
-			return resolveDirectValue(value.fallback, inputs, outputs);
-		}
-	}
-	return Object.fromEntries(
-		Object.entries(value).map(([key, item]) => [
-			key,
-			resolveDirectValue(item, inputs, outputs),
-		]),
-	);
-}
-
-function validateDirectInputs(
-	spec: MetaToolSpec,
-	inputs: Record<string, unknown>,
-): void {
-	const schema = spec.input_schema;
-	const properties = isRecord(schema.properties) ? schema.properties : {};
-	const required = Array.isArray(schema.required) ? schema.required : [];
-	const missing = required.filter(
-		(name): name is string => typeof name === "string" && !(name in inputs),
-	);
-	if (missing.length)
-		throw new Error(`Missing required meta-tool inputs: ${missing.join(", ")}`);
-	if (schema.additionalProperties === false) {
-		const unknown = Object.keys(inputs).filter((name) => !(name in properties));
-		if (unknown.length)
-			throw new Error(`Unknown meta-tool inputs: ${unknown.join(", ")}`);
-	}
-}
-
-function policyNumber(
-	policy: Record<string, unknown>,
-	key: string,
-	defaultValue: number,
-): number {
-	const value = policy[key];
-	return typeof value === "number" && Number.isFinite(value)
-		? value
-		: defaultValue;
-}
-
-/**
- * A narrow interception gate for the synchronous hot path. It mirrors the
- * SAFE_AUTO admission checks and is deliberately stricter than the Python
- * dispatcher; anything uncertain falls back to the reference implementation.
- */
-function directExecutionAllowed(
-	spec: MetaToolSpec,
-	mode: DispatchMode,
-	policy: Record<string, unknown>,
-): boolean {
-	if (mode !== "safe_auto" && mode !== "force") return false;
-	// FORCE has already gone through the extension's fixed-plan confirmation
-	// and per-step confirmation checks. The Python dispatcher intentionally
-	// bypasses policy in this mode, so the direct executor can do the same.
-	if (mode === "force") return true;
-	if (spec.metadata.execution_guard !== "none") return false;
-	if (spec.metadata.side_effect_free !== true) return false;
-	if (
-		policy.require_reviewed !== false &&
-		spec.metadata.reviewed !== true &&
-		spec.metadata.requires_domain_review !== false
-	)
-		return false;
-	if (policy.require_no_compiler_warnings !== false) {
-		const warnings = spec.metadata.compiler_warnings;
-		if (Array.isArray(warnings) && warnings.length > 0) return false;
-		if (warnings && !Array.isArray(warnings)) return false;
-	}
-	const internalFlows = Number(spec.metadata.internal_data_flows ?? 0);
-	const callerReadBatch = policy.allow_caller_bound_read_batches === true && isCallerBoundReadBatch(spec);
-	if (policy.require_internal_data_flow !== false && internalFlows < 1 && !callerReadBatch)
-		return false;
-	if (
-		internalFlows < 1 && !callerReadBatch &&
-		Number(policy.min_varying_data_flows ?? 1) > 0
-	)
-		return false;
-	const minimums: Array<[string, number]> = [
-		["sequence_purity", policyNumber(policy, "min_sequence_purity", 1)],
-		["min_branch_dominance", policyNumber(policy, "min_branch_dominance", 1)],
-		["llm_turn_coverage", policyNumber(policy, "min_llm_turn_coverage", 1)],
-		[
-			"mean_llm_calls_saved_per_observed_occurrence",
-			policyNumber(policy, "min_llm_calls_saved_per_occurrence", 1),
-		],
-	];
-	for (const [key, minimum] of minimums) {
-		const raw = spec.metadata[key];
-		if (raw === undefined) {
-			if (minimum > 0) return false;
-			continue;
-		}
-		const observed = Number(raw);
-		if (!Number.isFinite(observed) || observed < minimum) return false;
-	}
-	return true;
-}
-
-async function executeDirectMetaTool(
-	spec: MetaToolSpec,
-	inputs: Record<string, unknown>,
-	callPrimitive: DirectPrimitiveCall,
-): Promise<unknown> {
-	validateDirectInputs(spec, inputs);
-	const outputs = new Map<string, unknown>();
-	for (const step of spec.steps) {
-		const raw = resolveDirectValue(step.arguments, inputs, outputs);
-		if (!isRecord(raw))
-			throw new TypeError(`Resolved arguments for ${step.tool} are not an object`);
-		try {
-			outputs.set(step.id, await callPrimitive(step.id, step.tool, raw));
-		} catch (error) {
-			throw new Error(
-				`Meta-tool ${spec.name} failed at ${step.id} (${step.tool}): ${String(error)}`,
-				{ cause: error },
-			);
-		}
-	}
-	return resolveDirectValue(spec.output, inputs, outputs);
 }
 
 function formatSpec(
@@ -1277,7 +1098,7 @@ export default function metaToolExtension(pi: ExtensionAPI) {
 				ctx.cwd,
 				ctx.sessionManager.getSessionId(),
 				{
-					plugin_version: "1.0.0",
+					plugin_version: "2.0.0",
 					project_tags: profile.tags,
 					providers: profile.providers,
 					tool_schema_fingerprints: Object.fromEntries(

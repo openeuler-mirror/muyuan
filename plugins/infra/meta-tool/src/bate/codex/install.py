@@ -12,6 +12,7 @@ import tomllib
 
 from .online import _atomic_json
 from .server import load_settings
+from .. import __version__
 
 BEGIN = "# BEGIN BATE META-TOOL (managed)"
 END = "# END BATE META-TOOL (managed)"
@@ -110,7 +111,7 @@ def install(project: Path, *, config: Path | None = None, trace_files=()) -> dic
     # All conflict and syntax checks precede writes to existing host settings.
     skill_root = Path(__file__).parent / "skills/meta-tool"
     payloads = {
-        ".codex-plugin/plugin.json": {"name": "meta-tool", "version": "1.1.0",
+        ".codex-plugin/plugin.json": {"name": "meta-tool", "version": __version__,
             "description": "BATE session controls, Static/Online workflows and project batch reads",
             "author": {"name": "kkjocker"}, "skills": "./skills/", "mcpServers": "./.mcp.json",
             "interface": {"displayName": "meta-tool", "shortDescription": "BATE controls and project batch reads"}},

@@ -27,11 +27,22 @@ it does not emulate native shell or patch tools.
 BATE and its older optimized predecessor share contracts, not their candidate
 selection algorithm. A normalization-rule optimization loop is not included.
 
-The distribution name `meta-tool-online` is retained. The Python package has
-moved from `awo` to `bate`: update imports and `python -m awo` invocations to
-`bate`, then reinstall this distribution. There is no `awo` compatibility shim
-or second implementation. Existing JSON trace and workflow formats are unchanged.
-No sibling algorithm repository or absolute filesystem path is required.
+## Upgrade from 1.x to 2.0
+
+Version **2.0.0** marks the incompatible Python namespace migration from `awo`
+to `bate`. The distribution name remains `meta-tool-online`; there is no `awo`
+compatibility shim or second implementation.
+
+1. Change imports, for example `from awo.spec import MetaToolSpec` to
+   `from bate.spec import MetaToolSpec`, and change `python -m awo` to `python -m bate`.
+2. Close active host sessions and rerun the host installation command below.
+   For an editable development environment, run `python3 -m pip install --upgrade -e '.[dev]'`.
+   Updating the checkout alone does not update installed plugin copies.
+3. Start a new session. Verify the package with `python -m bate --version`.
+
+Existing JSON trace and workflow formats are unchanged and require no format
+migration; runtime admission and input validation still apply. No sibling
+algorithm repository or absolute filesystem path is required.
 
 ## Install and verify
 

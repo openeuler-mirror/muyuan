@@ -17,7 +17,11 @@ their full sequence. Runtime IDs are obtained from fresh primitive results.
 Stages: normalize calls and build execution paths; enumerate observed sequences;
 refine graph candidates to connected data-flow spans; assess each complete
 sequence; compile `$input`/`$step` bindings; reject compiler warnings by default;
-assign optional `mt_<12 hex>` names; write the catalog and diagnostics.
+deduplicate graph/raw sequences and select non-nested executable workflows;
+apply `--max-meta-tools`; assign optional `mt_<12 hex>` names; write the catalog
+and diagnostics. An ineligible or uncompilable longer sequence cannot suppress
+an executable prefix or consume a Top-K slot. `--keep-nested` skips only the
+nesting filter; `--allow-compiler-warnings` explicitly permits warned templates.
 
 The current builder uses primitive execution paths. It does not iteratively
 compress already-selected workflows. The optional raw enumerator supplements

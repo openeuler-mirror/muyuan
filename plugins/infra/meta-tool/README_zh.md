@@ -7,6 +7,19 @@ BATE（Branch-Aware Template Extraction，分支感知模板提取）从重复�
 本目录独立安装，不依赖其他算法仓库。Python 包名为 `bate`，发行包名仍为
 `meta-tool-online`；没有 `awo` 兼容桥接。
 
+## 从 1.x 升级到 2.0
+
+本次版本为 **2.0.0**，主版本升级表示 Python 命名空间从 `awo` 改为 `bate`
+是不兼容变更，发行包名 `meta-tool-online` 保持不变。
+
+1. 更新脚本中的导入，例如 `from awo.spec import MetaToolSpec` 改为
+   `from bate.spec import MetaToolSpec`；`python -m awo` 改为 `python -m bate`。
+2. 关闭使用插件的会话，重新执行下方对应宿主的安装命令以更新已安装副本。
+   开发环境运行 `python3 -m pip install --upgrade -e '.[dev]'`；只更新源码不等于更新插件副本。
+3. 开启新会话；用 `python -m bate --version` 确认 Python 包版本。
+
+已有 JSON 轨迹和工具目录的格式保持兼容，无需转换；执行时仍需通过准入及输入校验。
+
 ## Pi / Codex：统一一条命令安装
 
 需要 Linux/macOS、Python 3.11+。Pi 还需要 Node.js 22.18+、npm 和已安装的 Pi；

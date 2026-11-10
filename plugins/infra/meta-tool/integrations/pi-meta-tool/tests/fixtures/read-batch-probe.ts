@@ -8,6 +8,8 @@ const extension = process.env.BATE_READ_BATCH_PROBE_EXTENSION ??
 const source = fileURLToPath(import.meta.url);
 
 export default function probe(pi: any) {
+	let primitiveReads = 0;
+	pi.on("tool_call", (event: any) => { if (event.toolName === "read") primitiveReads++; });
 	pi.on("before_provider_request", () => { throw new Error("Provider calls forbidden by read-batch probe"); });
 	pi.on("input", async (_event: any, ctx: any) => {
 		try {
@@ -43,6 +45,18 @@ export default function probe(pi: any) {
 					{ path: source, offset: 1, limit: 301 }, { path: source, offset: 1, limit: 3 },
 				] });
 				assert.equal(bad.isError, true);
+				// Direct meta_tool_run callers must obey the same bounds as the
+				// convenience batch entry; rejection must precede every read.
+				const before = primitiveReads;
+				assert(before > 0, "Primitive read observer was not reached");
+				const invalid = await pi.callTool("meta_tool_run", {
+					metaTool: "meta_tool_read_batch_2", catalogScope: "user",
+					inputs: { path_1: source, offset_1: 1, limit_1: 9999,
+						path_2: source, offset_2: 1, limit_2: 3 },
+				});
+				assert.equal(invalid.isError, true);
+				assert(text(invalid).includes("maximum"), text(invalid));
+				assert.equal(primitiveReads, before, "Invalid input reached a primitive read");
 			}
 			// A fresh workspace must not require a seeded user catalog or traces.
 			console.log(JSON.stringify({ read_batch_probe: true, passed: true, model_calls: 0,

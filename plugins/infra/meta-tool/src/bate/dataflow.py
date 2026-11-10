@@ -294,16 +294,17 @@ def _is_parameter_shaped(values: Sequence[Any]) -> bool:
 def _leaf_paths(
     value: Any, prefix: ArgumentPath = ()
 ) -> list[ArgumentPath]:
+    # Keep nested []/{} visible to cross-occurrence binding and shape checks.
     if isinstance(value, Mapping):
         paths: list[ArgumentPath] = []
         for key in sorted(value, key=str):
             paths.extend(_leaf_paths(value[key], prefix + (str(key),)))
-        return paths
+        return paths or ([prefix] if prefix else [])
     if isinstance(value, (list, tuple)):
         paths = []
         for index, item in enumerate(value):
             paths.extend(_leaf_paths(item, prefix + (index,)))
-        return paths
+        return paths or ([prefix] if prefix else [])
     return [prefix]
 
 

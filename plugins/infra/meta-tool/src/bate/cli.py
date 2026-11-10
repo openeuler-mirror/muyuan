@@ -126,10 +126,7 @@ def main(argv=None, *, on_templates=None):
             max_steps=args.max_len,
             min_support=min_support,
         )
-        candidates = (
-            enumerated if args.keep_nested
-            else graph_source.select_non_nested(enumerated)
-        )
+        candidates = enumerated
         reports = assess_all_graph(
             candidates,
             corpus,
@@ -145,9 +142,7 @@ def main(argv=None, *, on_templates=None):
             max_len=args.max_len,
             min_support=min_support,
         )
-        candidates = (
-            enumerated if args.keep_nested else select_non_nested(enumerated)
-        )
+        candidates = enumerated
         reports = assess_all(
             candidates,
             traces,
@@ -169,10 +164,7 @@ def main(argv=None, *, on_templates=None):
             max_len=args.max_len,
             min_support=min_support,
         )
-        raw_candidates = (
-            raw_enumerated if args.keep_nested
-            else select_non_nested(raw_enumerated)
-        )
+        raw_candidates = raw_enumerated
         raw_reports = assess_all(
             raw_candidates,
             traces,
@@ -181,11 +173,9 @@ def main(argv=None, *, on_templates=None):
             min_varying_data_flows=args.min_varying_data_flows,
             require_fully_bound=args.require_fully_bound,
         )
-        have = {tuple(c.sequence) for c, _ in admitted_pairs}
         for cand, rep in zip(raw_candidates, raw_reports):
-            if rep.admitted and tuple(cand.sequence) not in have:
+            if rep.admitted:
                 admitted_pairs.append((cand, rep))
-                have.add(tuple(cand.sequence))
         for key, members in sibling_groups(raw_candidates).items():
             siblings.setdefault(key, members)
         reports.extend(raw_reports)
@@ -193,9 +183,7 @@ def main(argv=None, *, on_templates=None):
     admitted_pairs.sort(
         key=lambda p: (-p[0].total_decisions_saved, -p[0].support)
     )
-    templates = compile_admitted(
-        admitted_pairs, traces, norm, max_meta_tools=args.max_meta_tools
-    )
+    templates = compile_admitted(admitted_pairs, traces, norm)
 
     warnings_rejected = 0
     if not args.allow_compiler_warnings:
@@ -203,6 +191,16 @@ def main(argv=None, *, on_templates=None):
         warnings_rejected = len(templates) - len(kept)
         templates = kept
 
+    # Only executable candidates may suppress a nested workflow or consume a
+    # Top-K slot. Graph/raw duplicates are also resolved after compilation.
+    unique = {}
+    for template in templates:
+        unique.setdefault(tuple(template.candidate.sequence), template)
+    templates = list(unique.values())
+    if not args.keep_nested:
+        selected = {id(c) for c in select_non_nested([t.candidate for t in templates])}
+        templates = [t for t in templates if id(t.candidate) in selected]
+    templates = templates[:args.max_meta_tools]
 
     parameters = {
         "min_len": args.min_len, "max_len": args.max_len, "min_support": min_support,

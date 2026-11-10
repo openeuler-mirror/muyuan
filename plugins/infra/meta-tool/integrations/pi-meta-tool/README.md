@@ -70,7 +70,13 @@ The TypeScript lifecycle, journal, routing and transport code was copied from
 the earlier Pi host integration into this repository (not linked at runtime).
 The discovery adapter is new and has CLI-parity regression coverage.
 
-Tests: `npm test` here and `PYTHONPATH=src python -m pytest tests/test_pi_online.py`
+The direct execution path validates the complete input schema before its first
+primitive call, including `force` mode. It uses Draft 2020-12 without coercion
+or defaults. Schemas it cannot validate use the Python reference path; neither
+validator fetches remote references. Data-flow thresholds use actual `$step`
+bindings and the same evidence/review exemptions as Python.
+
+Tests: `npm test` here and `PYTHONPATH=src python -m pytest tests/test_pi_online.py tests/test_pi_direct_execution.py`
 from the repository root.
 
 For a real Pi main/worker-wrapper check without model calls, run

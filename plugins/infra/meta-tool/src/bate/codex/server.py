@@ -19,6 +19,7 @@ import re
 from typing import Any, Mapping
 
 from ..io import load_specs
+from .. import __version__
 from ..naming import template_fingerprint
 from ..runtime import MetaToolExecutionError, MetaToolExecutor
 from ..spec import MetaToolSpec
@@ -421,7 +422,7 @@ def create_server(service: CatalogService):
             "Control this BATE connection when the user asks: status, on/off, static/online, "
             "batch_on/batch_off. Off stops execution and learning after in-flight work completes. "
             "Online requires operator-configured trace files. Never enable implicitly after user off.")
-    server = Server("bate-codex", version="1.0.0", instructions=(
+    server = Server("bate-codex", version=__version__, instructions=(
         "Use a BATE meta-tool only when its complete fixed sequence matches the user's task. "
         "Search the current catalog with meta_tool_search, then call meta_tool_run with its fingerprint. "
         "These are read-only MCP composites, not native Codex shell/patch tools. "
