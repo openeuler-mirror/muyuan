@@ -1,0 +1,187 @@
+"""Conditional SIR on a kept complete sequence, with token-free step history.
+
+Candidate zero reuses the current block, completion and reward. Batch and
+streaming execution share the same tree and complete-weight selection.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from math import ceil, exp, fsum, isfinite
+
+from inference_scaling.arllm.algorithms.config import ConditionalISConfig
+from inference_scaling.arllm.config import SamplingConfig
+from inference_scaling.arllm.types import AutoregressiveBackend, TokenSequence
+from inference_scaling.shared.rng import SeedStream
+from inference_scaling.shared.sampling.conditional_is import (
+    CandidateSummary, ConditionalISResult, ConditionalISStep, RolloutSummary, select, select_metropolized,
+)
+from inference_scaling.shared.types import TokenBatchReward
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedSequence:
+    """Selected complete sequence; no older candidate pools."""
+
+    token_ids: TokenSequence = ()
+    reward: float = 0.0
+    fixed: int = 0
+    # An early first pool forecasts from observed prefixes, then discards them.
+    next_candidate_count: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConditionalISAdapter:
+    backend: AutoregressiveBackend
+    prompt: TokenSequence
+    config: ConditionalISConfig
+    sampling: SamplingConfig
+    reward: TokenBatchReward
+    # A cached prefix proxy; None means no usable observation, never a model rescore.
+    prefix_reward: Callable[[TokenSequence, TokenSequence], float | None] | None = None
+
+    @property
+    def initial_state(self) -> RetainedSequence:
+        return RetainedSequence()
+
+    def is_terminal(self, state: RetainedSequence) -> bool:
+        return bool(state.token_ids) and state.fixed >= len(state.token_ids)
+
+    def step(self, state: RetainedSequence, step_index: int,
+             seeds: SeedStream) -> tuple[ConditionalISStep, RetainedSequence]:
+        """Return the current tree for immediate inspection, and the selected state."""
+        from inference_scaling.arllm.algorithms.candidates import evaluate_candidates
+
+        if self.is_terminal(state):
+            raise ValueError("cannot advance a terminal generation state")
+        candidates, forward_slots, sources, evaluations, selection, forecast = evaluate_candidates(
+            self, state, step_index, seeds)
+        carried = bool(state.token_ids)
+        if selection is not None:
+            selected, kept = selection
+        elif self.config.selection != "sir":
+            selected, kept = select_metropolized(candidates, seeds, "conditional_is", step_index,
+                                                group_blocks=self.config.selection == "block_metropolized")
+        else:
+            selected, kept = select(candidates, seeds, "conditional_is", step_index)
+        candidate = candidates[selected]
+        completion = candidate.rollouts[kept]
+        width = (max(self.config.block_size, *(len(item.token_ids) for item in candidates))
+                 if self.config.selection_ready else self.config.block_size)
+        record = ConditionalISStep(
+            state.fixed, candidates, selected, kept, carried,
+            evaluations, forward_slots,
+            (width, self.config.candidate_count, self.config.rollout_count),
+            sources,
+        )
+        fixed = state.token_ids[:state.fixed] + candidate.token_ids
+        updated = RetainedSequence(fixed + completion.token_ids, completion.reward, len(fixed), forecast)
+        retain = getattr(self.backend, "retain_statistics", None)
+        if retain is not None:
+            retain(self.prompt, updated.token_ids)
+        return record, updated
+
+
+def _final_candidate_count(record: ConditionalISStep, fixed: int, config: ConditionalISConfig,
+                           seeds: SeedStream) -> int:
+    """Allocate a complete final pool or reuse the retained sequence without new samples.
+
+    The decision uses only unused first-tree groups and an independent random draw.
+    It changes finite-budget exploration, not the reward or completion-time policy.
+    """
+    observations = tuple(
+        (index, len(candidate.rollouts),
+         record.generated_length_before
+         + (candidate.token_count if isinstance(candidate, CandidateSummary) else len(candidate.token_ids))
+         + (leaf.token_count if isinstance(leaf, RolloutSummary) else len(leaf.token_ids)), leaf.log_weight)
+        for index, candidate in enumerate(record.candidates) if index != record.selected_index
+        for leaf in candidate.rollouts)
+    return forecast_candidate_count(observations, fixed, config, seeds)
+
+
+def forecast_candidate_count(observations: tuple[tuple[int, int, int, float], ...], fixed: int,
+                             config: ConditionalISConfig, seeds: SeedStream) -> int:
+    """Forecast from unused (group, planned K, observed length, log weight) rows.
+
+    Complete and early first pools share the same allocation. Each planned
+    leaf has one row; unfinished leaves supply only their observed prefix.
+    Terminal one-leaf groups retain equal group mass. The result predicts
+    generated work, not a hard token/FLOPs budget or an error guarantee.
+    """
+    length_sum = work_sum = 0
+    groups: dict[int, list[float]] = {}
+    for index, planned, observed_length, log_weight in observations:
+        groups.setdefault(index, []).append(log_weight)
+        multiplicity = config.rollout_count // planned
+        length = max(0, observed_length - fixed)
+        rounds = (length + config.block_size - 1) // config.block_size
+        suffix_sum = rounds * length - config.block_size * rounds * (rounds - 1) // 2
+        work = ((config.candidate_count - 1) * suffix_sum
+                + config.candidate_count * (config.rollout_count - 1) * (suffix_sum - length))
+        length_sum += multiplicity * length
+        work_sum += multiplicity * work
+    full = work_sum // length_sum if length_sum else 0
+    if config.final_pool_limit is not None:
+        full = min(full, config.final_pool_limit)
+    unused = list(groups.values())
+    if not full or len(unused) < 2:
+        # A single auxiliary group cannot estimate variation between prefixes.
+        return full
+    peak = max(value for group in unused for value in group)
+    if not isfinite(peak):
+        return full
+    means = [fsum(exp(value - peak) for value in group) / len(group) for group in unused]
+    seconds = [fsum(exp(2 * (value - peak)) for value in group) / len(group) for group in unused]
+    mean, second = fsum(means) / len(unused), fsum(seconds) / len(unused)
+    dispersion = max(0., min(1., 1 - mean * mean / second))
+    minimum = min(full, config.candidate_count - 1)
+    expected = minimum + ceil((full - minimum) * dispersion)
+    return full if float(seeds.generator("conditional_is", "final_pool_gate").random()) < expected / full else 0
+
+
+def run_conditional_is(
+    backend: AutoregressiveBackend,
+    prompt: TokenSequence,
+    config: ConditionalISConfig,
+    reward: TokenBatchReward,
+    seeds: SeedStream,
+    *,
+    sampling: SamplingConfig | None = None,
+    deadline: float | None = None,
+    prefix_reward: Callable[[TokenSequence, TokenSequence], float | None] | None = None,
+    on_commit: Callable[[TokenSequence], None] | None = None,
+) -> ConditionalISResult:
+    """Report only irrevocable prefixes; observation cannot select a candidate.
+
+    A deadline is checked between steps, never within a candidate tree.
+    The callback receives cumulative committed tokens, without retaining history.
+    """
+    adapter = ConditionalISAdapter(backend=backend, prompt=prompt, config=config,
+                                   sampling=sampling or SamplingConfig(), reward=reward, prefix_reward=prefix_reward)
+    state = adapter.initial_state
+    steps: list[ConditionalISStep] = []
+    while not adapter.is_terminal(state):
+        if steps and deadline is not None and time.monotonic() >= deadline:
+            break
+        record, state = adapter.step(state, len(steps), seeds)
+        if on_commit is not None:
+            on_commit(state.token_ids[:state.fixed])
+        if (not steps and config.exploration_schedule == "two_stage"
+                and config.candidate_count > 1 and not adapter.is_terminal(state)):
+            count = (state.next_candidate_count if state.next_candidate_count is not None
+                     else _final_candidate_count(record, state.fixed, config, seeds))
+            adapter = replace(adapter, config=replace(config, candidate_count=1 + count,
+                              rollout_count=1, block_size=config.total_length - state.fixed))
+        steps.append(record.compact())
+        del record
+    if on_commit is not None and state.fixed < len(state.token_ids):
+        # A deadline returns the selected complete rollout, including its suffix.
+        on_commit(state.token_ids)
+    forward_slots = None if any(step.forward_token_slots is None for step in steps) else sum(
+        step.forward_token_slots or 0 for step in steps)
+    reason = ("deadline" if not adapter.is_terminal(state)
+              else "eos" if state.token_ids[-1] == adapter.sampling.eos_token_id
+              else "length" if len(state.token_ids) >= config.total_length else "stop")
+    return ConditionalISResult(prompt, state.token_ids, tuple(steps), forward_slots, reason)

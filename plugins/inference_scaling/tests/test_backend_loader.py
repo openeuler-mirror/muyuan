@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import copy
+import inspect
+from types import SimpleNamespace
+
+import pytest
+
+from inference_scaling.app.settings import load_settings
+from inference_scaling.arllm.backends import loader
+
+
+def _sections(backend: str = "transformers"):
+    ar = copy.deepcopy(load_settings()["ar"])
+    ar["engine"]["backend"] = backend
+    ar["model"]["path"] = "local-model"
+    return ar["model"], ar["engine"]
+
+
+def test_transformers_loader_passes_every_configured_option(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(loader.TransformersBackend, "from_pretrained",
+                        lambda model, **kwargs: captured.update(model=model, **kwargs) or "transformers")
+    model, engine = _sections()
+    engine["transformers"]["model_kwargs"] = {"low_cpu_mem_usage": True}
+
+    assert loader.load_backend(model, engine, seed=3, logprobs=0) == "transformers"
+    assert captured == {
+        "model": "local-model",
+        "adapter_name_or_path": None,
+        "adapter_revision": None,
+        "revision": model["revision"],
+        "tokenizer_name_or_path": None,
+        "tokenizer_revision": None,
+        "tokenizer_kwargs": {},
+        "local_files_only": model["local_files_only"],
+        "trust_remote_code": False,
+        "token_penalty": model["token_penalty"],
+        "cache_dir": None,
+        "device": engine["device"],
+        "dtype": engine["dtype"],
+        "device_map": None,
+        "attn_implementation": "sdpa",
+        "model_kwargs": {"low_cpu_mem_usage": True},
+        "max_score_batch_size": engine["transformers"]["max_score_batch_size"],
+        "score_chunk_size": engine["transformers"]["score_chunk_size"],
+        "prefix_cache_mib": engine["transformers"]["prefix_cache_mib"],
+        "in_place_kv": engine["transformers"]["in_place_kv"],
+        "cuda_graphs": engine["transformers"]["cuda_graphs"],
+    }
+
+
+def test_adapter_loads_on_top_of_the_base_model(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(loader.TransformersBackend, "from_pretrained",
+                        lambda model, **kwargs: captured.update(model=model, **kwargs))
+    model, engine = _sections()
+    model["adapter"] = {"path": "grpo-adapter", "revision": "adapter-commit"}
+
+    loader.load_backend(model, engine, seed=3, logprobs=0)
+    assert captured["model"] == "local-model"
+    assert captured["adapter_name_or_path"] == "grpo-adapter"
+    assert captured["adapter_revision"] == "adapter-commit"
+
+
+def test_async_vllm_uses_its_public_signature_and_shares_files_with_the_exact_scorer(monkeypatch, tmp_path) -> None:
+    calls = []
+    original = loader.AsyncVLLMBackend.from_pretrained
+    monkeypatch.setattr(loader.TransformersBackend, "from_pretrained",
+                        lambda model, **kwargs: calls.append(("scorer", model, kwargs)) or SimpleNamespace())
+
+    def engine_loader(model, **kwargs):
+        assert set(kwargs) <= set(inspect.signature(original).parameters)
+        calls.append(("engine", model, kwargs))
+        return "engine"
+
+    monkeypatch.setattr(loader.AsyncVLLMBackend, "from_pretrained", engine_loader)
+    model, engine = _sections("vllm")
+    model["path"] = str(tmp_path)
+    engine["vllm"]["exact_scoring"] = "transformers"
+
+    assert loader.load_backend(model, engine, seed=5, logprobs=16) == "engine"
+    (_, scorer_model, _), (_, engine_model, kwargs) = calls
+    assert scorer_model == engine_model == str(tmp_path)
+    assert kwargs["seed"] == 5
+    assert kwargs["max_model_len"] == engine["context_window"]
+    assert kwargs["engine_kwargs"] == {**engine["vllm"]["engine_kwargs"], "max_logprobs": 16}
+    assert kwargs["enable_fused_logprobs"] is False
+    assert kwargs["scalar_self_certainty"] is True
+    assert kwargs["flat_logprobs"] is True and kwargs["stream_interval"] == 32
+    assert kwargs["async_scheduling"] is None
+
+
+def test_fused_logprobs_reach_either_engine_but_need_an_unpenalized_model(monkeypatch, tmp_path) -> None:
+    model, engine = _sections("vllm")
+    model["path"] = str(tmp_path)
+    model["token_penalty"] = {"words": ["wait"], "strength": 1.0}
+    engine["vllm"]["fused_logprobs"] = True
+    engine["vllm"]["scalar_self_certainty"] = False
+    with pytest.raises(ValueError, match="unpenalized"):
+        loader.load_backend(model, engine, seed=0, logprobs=0)
+
+    model["token_penalty"] = None
+    captured = {}
+    for asynchronous, backend in ((True, loader.AsyncVLLMBackend), (False, loader.VLLMBackend)):
+        monkeypatch.setattr(backend, "from_pretrained", lambda model, **kwargs: captured.update(kwargs))
+        engine["vllm"]["asynchronous"] = asynchronous
+        captured.clear()
+        loader.load_backend(model, engine, seed=0, logprobs=0)
+        assert captured["enable_fused_logprobs"] is True and "max_logprobs" not in captured["engine_kwargs"]
+
+
+def test_scheduler_capacity_is_clamped_to_native_engine_slots(monkeypatch, tmp_path) -> None:
+    model, engine = _sections("vllm")
+    model["path"] = str(tmp_path)
+    engine["vllm"]["max_num_seqs"] = 5
+    backend = object.__new__(loader.AsyncVLLMBackend)
+    configured = []
+    backend.configure_scheduler = configured.append
+    monkeypatch.setattr(loader.AsyncVLLMBackend, "from_pretrained", lambda *args, **kwargs: backend)
+    assert loader.load_backend(model, engine, seed=0, logprobs=0) is backend
+    assert configured[0].max_in_flight == 5 and configured[0].enabled
+
+
+def test_bad_scheduler_capacity_is_rejected_before_loading_the_model(monkeypatch, tmp_path) -> None:
+    model, engine = _sections("vllm")
+    model["path"] = str(tmp_path)
+    engine["rollout_scheduler"]["max_in_flight"] = 0
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("invalid scheduling settings must not start an engine")
+
+    monkeypatch.setattr(loader.AsyncVLLMBackend, "from_pretrained", unexpected)
+    with pytest.raises(ValueError, match="capacities"):
+        loader.load_backend(model, engine, seed=0, logprobs=0)

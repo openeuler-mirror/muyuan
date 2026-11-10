@@ -1,0 +1,1249 @@
+"""vLLM backends with exact sampling-policy accounting.
+
+The synchronous backend deliberately submits one vLLM request per framework
+``GenerationRequest``.  This retains request-local seeds while still allowing
+vLLM to batch requests and reuse their common prefixes.  Collapsing repeated
+prompts into ``SamplingParams(n=...)`` would replace those independent seeds by
+one group seed and make results depend on how callers happened to be batched.
+
+vLLM can return processed log-probabilities for generated tokens, but prompt
+log-probabilities are always raw model probabilities.  Native continuation
+scoring is therefore exact for the full-support temperature-one policy of a
+model without a token penalty.  Other policies are delegated to an optional
+exact scoring backend instead of silently using incorrect importance ratios.
+"""
+
+from __future__ import annotations
+
+from inference_scaling.shared.model.loading import model_identity, checkpoint_weight_files
+
+import asyncio
+import importlib.metadata
+import inspect
+import json
+import itertools
+from contextlib import contextmanager
+from copy import copy
+from functools import partial
+import os
+import re
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from math import fsum, isclose, isfinite, prod
+from pathlib import Path
+from typing import Any
+
+from packaging.version import Version
+
+from inference_scaling.shared.compute import dense_forward_flops
+from inference_scaling.shared.rng import SeedStream
+from inference_scaling.arllm.config import SamplingConfig, TokenPenalty
+from inference_scaling.arllm.backends.vllm_statistics import SCALAR_STATISTICS_KEY, scalar_generated_logprobs
+from inference_scaling.arllm.types import (AutoregressiveBackend, GenerationRequest, ScoreRequest, SequenceSample, TokenSequence,
+                                          TokenStatistic)
+
+_PROTECTED_ENGINE_KWARGS = frozenset({
+    "model", "tokenizer", "tokenizer_revision", "dtype", "tensor_parallel_size", "data_parallel_size",
+    "gpu_memory_utilization", "quantization", "enforce_eager", "trust_remote_code", "revision", "download_dir", "seed",
+    "enable_prefix_caching", "generation_config", "logprobs_mode", "enable_lora", "max_lora_rank", "max_model_len",
+    "max_num_seqs", "max_num_batched_tokens", "worker_cls", "async_scheduling", "stream_interval",
+    # Rejected draft tokens would escape the forward-token accounting; the statistics count preemptions.
+    "speculative_config", "disable_log_stats",
+})
+
+_FUSED_WORKER = "inference_scaling.arllm.backends.vllm_fused_worker.FusedLogprobWorker"
+_ASCEND_WORKER = "inference_scaling.arllm.backends.vllm_ascend_worker.AscendLogprobWorker"
+# Per request, the fused worker's base log-probabilities and Self-Certainty of the generated tokens.
+FusedValues = tuple[tuple[float, ...], tuple[float, ...]]
+# Token-only generation without speculative decoding runs neither a vision tower nor a multi-token-prediction head.
+_UNUSED_TENSOR = re.compile(r"(?:^|\.)(?:visual|vision_tower|vision_model|mtp)\.")
+
+
+@contextmanager
+def _engine_worker(engine_arguments: dict[str, Any], fused: bool):
+    """Select the sampling adapter before workers and graphs are initialized.
+
+    Ascend's V1 runner may ignore the requested log-probability mode. The
+    adapter sets both samplers without changing the native generation path.
+    The optional fused GPU worker requires synchronous internal sampling.
+    """
+
+    from vllm.platforms import current_platform
+
+    scalar = (engine_arguments.get("additional_config") or {}).get(SCALAR_STATISTICS_KEY, False)
+    if scalar and (current_platform.device_type != "npu" or fused):
+        raise ValueError("scalar Self-Certainty requires the Ascend processed-logprob worker, without fused_logprobs")
+    if current_platform.device_type == "npu":
+        if fused:
+            raise ValueError("fused log-probabilities are unsupported on Ascend")
+        yield {**engine_arguments, "worker_cls": _ASCEND_WORKER}
+        return
+    if not fused:
+        yield engine_arguments
+        return
+    installed = Version(importlib.metadata.version("vllm"))
+    if not Version("0.26") <= installed < Version("0.27"):
+        raise RuntimeError(f"fused log-probabilities require vLLM >=0.26,<0.27; found {installed}")
+    previous = os.environ.get("VLLM_USE_V2_MODEL_RUNNER")
+    if previous is not None and previous.strip().lower() in {"1", "true", "yes", "on"}:
+        raise ValueError("fused log-probabilities conflict with VLLM_USE_V2_MODEL_RUNNER=1")
+    os.environ["VLLM_USE_V2_MODEL_RUNNER"] = "0"
+    try:
+        yield {**engine_arguments, "worker_cls": _FUSED_WORKER, "async_scheduling": False}
+    finally:
+        if previous is None:
+            os.environ.pop("VLLM_USE_V2_MODEL_RUNNER", None)
+        else:
+            os.environ["VLLM_USE_V2_MODEL_RUNNER"] = previous
+
+
+def _load_vllm_sampling_api() -> tuple[Any, Any, Any]:
+    """Load public sampling types from their vLLM 0.25--0.26 locations."""
+
+    from vllm import SamplingParams, TokensPrompt
+    from vllm.sampling_params import BeamSearchParams
+
+    return SamplingParams, TokensPrompt, BeamSearchParams
+
+
+@dataclass(frozen=True, slots=True)
+class VLLMBackendSnapshot:
+    sample_calls: int
+    score_calls: int
+    sampled_sequences: int
+    generated_tokens: int
+    prefill_tokens: int
+    shared_prefill_tokens_saved: int
+    scored_tokens: int
+    generation_forward_token_slots: int
+    score_forward_token_slots: int
+    estimated_dense_forward_flops: int
+    engine_requests: int
+    native_score_sequences: int
+    delegated_score_sequences: int
+    delegated_score_forward_token_slots: int
+    delegated_estimated_dense_forward_flops: int
+    maximum_in_flight_requests: int
+    # Running requests the engine evicted for KV space; each one recomputes its tokens outside these counts.
+    preemptions: int
+    stream_outputs: int = 0
+    stream_events: int = 0
+    fused_logprobs: bool = False
+    fused_reference_sequences: int = 0
+    fused_reference_tokens: int = 0
+    # Aborted streams can have executed tokens not yet delivered by the engine.
+    cancelled_requests: int = 0
+
+
+class _AsyncLoopRunner:
+    """Own one event loop and construct the vLLM engine on that loop's thread."""
+
+    def __init__(self, engine_factory: Callable[[], Any]) -> None:
+        self._engine_factory = engine_factory
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._engine: Any | None = None
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run_loop, name="inference-scaling-vllm", daemon=True)
+        self._thread.start()
+        self._ready.wait()
+        if self._error is not None:
+            raise RuntimeError("failed to initialize the asynchronous vLLM engine") from self._error
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        try:
+            self._engine = self._engine_factory()
+        except BaseException as error:
+            self._error = error
+            self._ready.set()
+            asyncio.set_event_loop(None)
+            loop.close()
+            return
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    @property
+    def engine(self) -> Any:
+        if self._engine is None:
+            raise RuntimeError("asynchronous vLLM engine is unavailable")
+        return self._engine
+
+    def run(self, coroutine):
+        if self._loop is None or not self._thread.is_alive():
+            raise RuntimeError("asynchronous vLLM event loop is not running")
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+
+    def close(self) -> None:
+        if self._loop is None or not self._thread.is_alive():
+            return
+
+        async def shutdown() -> None:
+            callback = getattr(self.engine, "shutdown", None)
+            if callback is None:
+                return
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+
+        try:
+            self.run(shutdown())
+        finally:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join()
+
+
+def _checkpoint_parameter_count(model_name_or_path: str) -> int | None:
+    """Unique token-only parameters, read from safetensor shapes without loading weights."""
+
+    root = Path(model_name_or_path)
+    if not root.exists():
+        return None
+    files = [root] if root.is_file() and root.suffix == ".safetensors" else []
+    config = {}
+    if root.is_dir():
+        config_path = root / "config.json"
+        if config_path.is_file():
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        if config.get("quantization_config"):
+            return None  # Packed tensor sizes are not dense parameter counts.
+        try:
+            files = list(checkpoint_weight_files(root))
+        except FileNotFoundError:
+            return None
+    if not files or any(path.suffix != ".safetensors" for path in files):
+        return None
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        return None
+
+    total = 0
+    names: set[str] = set()
+    embeddings: set[tuple[int, ...]] = set()
+    heads: list[tuple[int, ...]] = []
+    for path in files:
+        with safe_open(path, framework="pt", device="cpu") as handle:
+            for name in handle.keys():
+                if name in names:
+                    raise ValueError(f"duplicate tensor {name!r} across checkpoint shards")
+                names.add(name)
+                if not _UNUSED_TENSOR.search(name):
+                    shape = tuple(int(dimension) for dimension in handle.get_slice(name).get_shape())
+                    total += prod(shape)
+                    if re.search(r"(?:^|\.)(?:embed_tokens|word_embeddings|wte|shared)\.weight$", name):
+                        embeddings.add(shape)
+                    elif re.search(r"(?:^|\.)lm_head\.weight$", name):
+                        heads.append(shape)
+    # Some exports store both copies even though the runtime ties the output
+    # projection to the input embedding. The explicit model config, not equal
+    # tensor shapes alone, establishes sharing. Other naming schemes retain the
+    # explicit parameter_count override rather than guessing a tied pair.
+    text_config = config.get("text_config") or config
+    if (text_config.get("tie_word_embeddings", config.get("tie_word_embeddings", False))
+            and len(heads) == 1 and heads[0] in embeddings):
+        total -= prod(heads[0])
+    return total
+
+
+def _logprob_value(position: Any, token_id: int) -> float:
+    if position is None:
+        raise RuntimeError("vLLM omitted a required token log-probability")
+    try:
+        value = position[int(token_id)]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(f"vLLM did not return the chosen token {token_id} in its log-probabilities") from error
+    return float(getattr(value, "logprob", value))
+
+
+def _top_confidence(position: Any, top_k: int) -> float:
+    """Minus the mean of the ``top_k`` largest log-probabilities that vLLM returned for a position."""
+
+    values = sorted((float(getattr(value, "logprob", value)) for value in position.values()), reverse=True)
+    return -fsum(values[:top_k]) / top_k
+
+
+def _generated_logprobs(positions: Any, tokens: TokenSequence,
+                       top_k: int | None) -> tuple[tuple[float, ...], tuple[float, ...] | None]:
+    """Read flat arrays directly; iterating FlatLogprobs would rebuild dictionaries.
+
+    Native rows contain the sampled token followed by the top-K tokens, with a
+    duplicate when the sampled token is in top-K. Match the dictionary API's
+    last value for that token, and reduce just the K top entries with fsum.
+    """
+    if positions is None or len(positions) != len(tokens):
+        raise RuntimeError("vLLM returned an invalid generated log-probability shape")
+    if not hasattr(positions, "start_indices"):
+        return (tuple(_logprob_value(position, token) for position, token in zip(positions, tokens, strict=True)),
+                None if top_k is None else tuple(_top_confidence(position, top_k) for position in positions))
+    logs, statistics = [], []
+    for token, start, end in zip(tokens, positions.start_indices, positions.end_indices, strict=True):
+        ids, values = positions.token_ids[start:end], positions.logprobs[start:end]
+        if not ids or token not in ids:
+            raise RuntimeError("vLLM omitted a required token log-probability")
+        logs.append(float(values[len(ids) - 1 - ids[::-1].index(token)]))
+        if top_k is not None:
+            if len(ids) == top_k + 1 and ids[0] == token:
+                statistics.append(-fsum(values[1:]) / top_k)
+            else:
+                # A collector may already have removed the sampled/top-K duplicate through append(dict).
+                distinct = dict(zip(ids, values, strict=True))
+                statistics.append(-fsum(sorted(distinct.values(), reverse=True)[:top_k]) / top_k)
+    return tuple(logs), None if top_k is None else tuple(statistics)
+
+
+def _append_logprobs(previous: Any, incoming: Any) -> Any:
+    """Append native delta arrays without FlatLogprobs.extend's dictionary expansion."""
+    if previous is None:
+        return incoming
+    if incoming is None:
+        return previous
+    if hasattr(previous, "start_indices"):
+        offset = len(previous.token_ids)
+        previous.start_indices.extend(offset + index for index in incoming.start_indices)
+        previous.end_indices.extend(offset + index for index in incoming.end_indices)
+        for field in ("token_ids", "logprobs", "ranks", "decoded_tokens"):
+            getattr(previous, field).extend(getattr(incoming, field))
+    else:
+        previous.extend(incoming)
+    return previous
+
+
+def _load_tokenizer(factory, model, tokenizer, tokenizer_revision, revision, cache_dir,
+                    local_files_only, trust_remote_code, options):
+    options = dict(options or {})
+    forbidden = {"revision", "cache_dir", "local_files_only", "trust_remote_code", "token"} & options.keys()
+    if forbidden:
+        raise ValueError("tokenizer kwargs duplicate explicit options or contain credentials: " + ", ".join(sorted(forbidden)))
+    return factory.from_pretrained(
+        tokenizer or model,
+        revision=tokenizer_revision if tokenizer_revision is not None else (revision if tokenizer is None else None),
+        cache_dir=cache_dir,
+        local_files_only=Path(tokenizer or model).exists() if local_files_only is None else local_files_only,
+        trust_remote_code=trust_remote_code, **options,
+    )
+
+
+class VLLMBackend:
+    """Synchronous offline vLLM implementation of ``AutoregressiveBackend``.
+
+    The supplied engine must use ``logprobs_mode='processed_logprobs'`` and
+    ``generation_config='vllm'``.  Prefer :meth:`from_pretrained`, which enforces
+    both settings and explicitly enables automatic prefix caching.
+    """
+
+    supports_native_token_stops = True
+    _cancelled_requests: int
+
+    def __init__(self, engine: Any, tokenizer: Any, *, model_id: str, parameter_count: int,
+                 sampling_params_factory: Callable[..., Any], tokens_prompt_factory: Callable[..., Any] | None = None,
+                 beam_search_params_factory: Callable[..., Any] | None = None,
+                 scoring_backend: AutoregressiveBackend | None = None, lora_request: Any | None = None,
+                 fused_logprobs: bool = False, token_penalty: TokenPenalty | None = None,
+                 metrics: Callable[[], Sequence[Any]] | None = None, flat_logprobs: bool = True,
+                 initial_strata: bool = False, scalar_self_certainty: bool = False) -> None:
+        if parameter_count <= 0:
+            raise ValueError("parameter_count must be positive")
+        # A token penalty makes the penalized model the model, so it is part of the identity.
+        self._penalty = token_penalty
+        self._model_id = str(model_id) if token_penalty is None else f"{model_id}|{token_penalty.penalty_id}"
+        if scoring_backend is not None and scoring_backend.model_id != self._model_id:
+            raise ValueError("the exact scoring backend must use the same model_id")
+        self._engine = engine
+        self.tokenizer = tokenizer
+        self._parameter_count = int(parameter_count)
+        self._sampling_params_factory = sampling_params_factory
+        self._tokens_prompt_factory = tokens_prompt_factory
+        self._beam_search_params_factory = beam_search_params_factory
+        self._scoring_backend = scoring_backend
+        self._lora_request = lora_request
+        self._fused_logprobs = bool(fused_logprobs)
+        self._scalar_self_certainty = bool(scalar_self_certainty)
+        self._flat_logprobs = bool(flat_logprobs)
+        self.bos_token_id = None if getattr(tokenizer, "bos_token_id", None) is None else int(tokenizer.bos_token_id)
+        self._engine_lock = threading.RLock()
+        self._delegated_score_lock = threading.RLock()
+        self._statistics_lock = threading.Lock()
+        self._initial_strata_supported = bool(initial_strata)
+        self._sampling_constraint_lock = threading.RLock()
+        self._sampling_constraint_seeds: dict[str, set[int]] = {"initial_strata": set(), "first_token_exclusion": set()}
+        self._closed = False
+        self._active_engine_requests = 0
+        for name in VLLMBackendSnapshot.__dataclass_fields__:
+            if name != "fused_logprobs":
+                setattr(self, "_" + name, 0)
+        # vLLM's metrics snapshot; the engine's preemption counter is read relative to this backend's start.
+        self._metrics = metrics
+        self._preemption_baseline = self._engine_preemptions()
+
+    @classmethod
+    def from_pretrained(
+        cls, model_name_or_path: str, *, adapter_name_or_path: str | None, adapter_revision: str | None,
+        revision: str | None, tokenizer_name_or_path: str | None, tokenizer_revision: str | None,
+        tokenizer_kwargs: dict[str, Any] | None, local_files_only: bool | None, trust_remote_code: bool,
+        download_dir: str | None, dtype: str, tensor_parallel_size: int, data_parallel_size: int,
+        gpu_memory_utilization: float, max_model_len: int | None, max_num_seqs: int | None,
+        max_num_batched_tokens: int | None, quantization: str | None, enforce_eager: bool, enable_prefix_caching: bool,
+        max_lora_rank: int, parameter_count: int | None, seed: int, scoring_backend: AutoregressiveBackend | None,
+        engine_kwargs: dict[str, Any] | None, token_penalty: Mapping[str, Any] | None,
+        enable_fused_logprobs: bool = False,
+        scalar_self_certainty: bool = False,
+        flat_logprobs: bool = True, stream_interval: int = 32, async_scheduling: bool | None = None,
+    ) -> "VLLMBackend":
+        """Load the tokenizer and engine; :meth:`_create` picks the vLLM frontend."""
+
+        if stream_interval < 1:
+            raise ValueError("stream_interval must be positive")
+        if enable_fused_logprobs and async_scheduling is True:
+            raise ValueError("fused log-probabilities require async_scheduling=false or null")
+        try:
+            from transformers import AutoTokenizer
+            from vllm.v1.metrics.reader import get_metrics_snapshot
+
+            SamplingParams, TokensPrompt, BeamSearchParams = _load_vllm_sampling_api()
+        except ImportError as error:  # pragma: no cover - optional GPU installation
+            raise ImportError(
+                f"{cls.__name__} could not import the installed vLLM backend: {error}. "
+                "Use an engine environment matching the accelerator (vLLM + vllm-ascend on Ascend)."
+            ) from error
+
+        tokenizer = _load_tokenizer(
+            AutoTokenizer, model_name_or_path, tokenizer_name_or_path, tokenizer_revision,
+            revision, download_dir, local_files_only, trust_remote_code, tokenizer_kwargs,
+        )
+        kwargs: dict[str, Any] = {
+            "model": model_name_or_path, "dtype": dtype, "tensor_parallel_size": int(tensor_parallel_size),
+            "data_parallel_size": int(data_parallel_size), "gpu_memory_utilization": float(gpu_memory_utilization),
+            "quantization": quantization, "enforce_eager": bool(enforce_eager), "trust_remote_code": bool(trust_remote_code),
+            "revision": revision, "tokenizer": tokenizer_name_or_path or model_name_or_path,
+            "tokenizer_revision": tokenizer_revision if tokenizer_revision is not None else (
+                revision if tokenizer_name_or_path is None else None),
+            "download_dir": download_dir, "seed": int(seed), "enable_prefix_caching": bool(enable_prefix_caching),
+            "generation_config": "vllm", "logprobs_mode": "processed_logprobs",
+            "enable_lora": adapter_name_or_path is not None, "max_lora_rank": int(max_lora_rank),
+            # The offline engine keeps no statistics by default; they carry the preemption counter.
+            "disable_log_stats": False,
+            "stream_interval": int(stream_interval),
+        }
+        if async_scheduling is not None:
+            kwargs["async_scheduling"] = async_scheduling
+        optional = {"max_model_len": max_model_len, "max_num_seqs": max_num_seqs,
+                    "max_num_batched_tokens": max_num_batched_tokens}
+        kwargs.update({name: value for name, value in optional.items() if value is not None})
+        if engine_kwargs:
+            overlap = _PROTECTED_ENGINE_KWARGS.intersection(engine_kwargs)
+            if overlap:
+                raise ValueError("engine_kwargs cannot override correctness-critical settings: " + ", ".join(sorted(overlap)))
+            kwargs.update(engine_kwargs)
+        additional = dict(kwargs.get("additional_config") or {})
+        if SCALAR_STATISTICS_KEY in additional:
+            raise ValueError("set vllm.scalar_self_certainty, not its private additional_config transport flag")
+        if scalar_self_certainty:
+            additional[SCALAR_STATISTICS_KEY] = True
+            kwargs["additional_config"] = additional
+        counted = parameter_count or _checkpoint_parameter_count(model_name_or_path)
+        if counted is None:
+            raise ValueError("parameter_count could not be read from a local safetensors checkpoint; "
+                             "pass parameter_count explicitly")
+        lora_request = None
+        if adapter_name_or_path is not None:
+            from vllm.lora.request import LoRARequest
+
+            lora_request = LoRARequest("inference-scaling", 1, adapter_name_or_path)
+        return cls._create(
+            kwargs, tokenizer, enable_fused_logprobs,
+            model_id=model_identity(
+                model_name_or_path, adapter_name_or_path, revision=revision, adapter_revision=adapter_revision,
+                tokenizer=tokenizer_name_or_path, tokenizer_revision=tokenizer_revision,
+            ),
+            parameter_count=counted, sampling_params_factory=SamplingParams, tokens_prompt_factory=TokensPrompt,
+            beam_search_params_factory=BeamSearchParams, scoring_backend=scoring_backend, lora_request=lora_request,
+            token_penalty=None if token_penalty is None else TokenPenalty.from_words(
+                tokenizer, token_penalty["words"], token_penalty["strength"]),
+            metrics=get_metrics_snapshot,
+            flat_logprobs=flat_logprobs,
+            scalar_self_certainty=scalar_self_certainty,
+        )
+
+    @classmethod
+    def _create(cls, engine_arguments: dict[str, Any], tokenizer: Any, fused_logprobs: bool,
+                **options: Any) -> "VLLMBackend":
+        from vllm import LLM
+
+        with _engine_worker(engine_arguments, fused_logprobs) as arguments:
+            engine = LLM(**arguments)
+        return cls(engine, tokenizer, fused_logprobs=fused_logprobs,
+                   initial_strata=arguments.get("worker_cls") == _ASCEND_WORKER, **options)
+
+    def _initial_strata_rpc(self, method: str, entries: Any) -> Any:
+        with self._engine_lock:
+            return self._engine.collective_rpc(method, args=(entries,))
+
+    def stratified_initialization(self, entries):
+        """Stratify newly started trajectories; independent requests may overlap.
+
+        The context spans all backend calls, including continuation after an
+        incomplete thinking marker. Only scalar interval state crosses calls.
+        A later whole-trajectory refresh may register a subset of the strata.
+        On exit, ``resolved_after`` maps sampled seeds to the first unrestricted
+        prefix length, or None if the interval never became unrestricted.
+        """
+        return self._sampling_constraint("initial_strata", entries)
+
+    def first_token_exclusion(self, entries):
+        """Exclude one token at each request's first draw; return base probabilities.
+
+        The algorithm must include the conditional proposal's normalizer in
+        its acceptance ratio. Independent pools may overlap with strata.
+        """
+        return self._sampling_constraint("first_token_exclusion", entries)
+
+    @contextmanager
+    def _sampling_constraint(self, kind, entries):
+        if not self._initial_strata_supported:
+            raise ValueError("sampling constraints require the vLLM Ascend sampling adapter")
+        from inference_scaling.shared.sampling.nonself import FirstTokenExclusions
+        from inference_scaling.shared.sampling.stratified import InitialStrata
+
+        entries = tuple(entries)
+        validator = InitialStrata() if kind == "initial_strata" else FirstTokenExclusions()
+        validator.add(entries)  # Validate before any worker is changed.
+        seeds = {entry[0] for entry in entries}
+        registered = self._sampling_constraint_seeds[kind]
+        with self._sampling_constraint_lock:
+            if any(current & seeds for current in self._sampling_constraint_seeds.values()):
+                raise ValueError("a sampling-constraint seed is already in use")
+            registered.update(seeds)
+            try:
+                self._initial_strata_rpc(f"begin_{kind}", entries)
+            except BaseException:
+                registered.difference_update(seeds)
+                self._initial_strata_rpc(f"end_{kind}", tuple(seeds))
+                raise
+        summary: dict[str, Any] = {}
+        try:
+            yield summary
+        finally:
+            with self._sampling_constraint_lock:
+                try:
+                    rows = self._initial_strata_rpc(f"end_{kind}", tuple(seeds))
+                    summary.update({key: max(row[key] for row in rows) for key in
+                                    ("registered", "touched", "constrained_tokens", "unresolved", "maximum_cdf_error")})
+                    resolved = {}
+                    for seed in seeds:
+                        states = [row["trajectories"][str(seed)] for row in rows
+                                  if row["trajectories"].get(str(seed), {}).get("tokens", 0) > 0]
+                        if states:
+                            if any(state != states[0] for state in states):
+                                raise RuntimeError("sampling workers disagree on constrained draws")
+                            resolved[seed] = states[0]["tokens"] if states[0]["resolved"] else None
+                    summary["resolved_after"] = resolved
+                finally:
+                    registered.difference_update(seeds)
+
+    def _bind_sampling_constraints(self, requests: Sequence[GenerationRequest], params: Sequence[Any]) -> None:
+        with self._sampling_constraint_lock:
+            for kind, seeds in self._sampling_constraint_seeds.items():
+                entries = [(request.seed, int(policy.seed)) for request, policy in zip(requests, params, strict=True)
+                           if request.seed in seeds]
+                if not entries:
+                    continue
+                if any(not request.sampling.full_support for request in requests if request.seed in seeds):
+                    raise ValueError("sampling constraints require full-support sampling")
+                self._initial_strata_rpc(f"bind_{kind}", entries)
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def parameter_count(self) -> int:
+        return self._parameter_count
+
+    @property
+    def scoring_backend(self) -> AutoregressiveBackend | None:
+        """Optional exact backend used for policies vLLM cannot rescore itself."""
+
+        return self._scoring_backend
+
+    def _model_prefix(self, prefix: TokenSequence) -> TokenSequence:
+        if prefix:
+            return prefix
+        if self.bos_token_id is None:
+            raise ValueError("an empty prefix requires a tokenizer bos_token_id")
+        return (self.bos_token_id,)
+
+    def _prompt(self, prefix: TokenSequence) -> Any:
+        token_ids = list(self._model_prefix(prefix))
+        if self._tokens_prompt_factory is None:
+            return {"prompt_token_ids": token_ids}
+        return self._tokens_prompt_factory(prompt_token_ids=token_ids)
+
+    def _logit_bias(self) -> dict[int, float] | None:
+        """The token penalty as vLLM applies it: on the logits, before the temperature."""
+
+        return None if self._penalty is None else {token: -self._penalty.strength for token in self._penalty.token_ids}
+
+    def _sampling_params(self, request: GenerationRequest) -> Any:
+        if request.draft is not None:
+            raise ValueError("vLLM does not sample from a request's uniform stream, so it cannot replay drafts")
+        if request.log_weight_stop is not None:
+            raise ValueError("vLLM does not report the reference log-probabilities a log-weight stop needs")
+        policy, statistic = request.sampling, self._statistic(request)
+        # vLLM cannot continue a uniform stream, so a continuing request draws independent randomness.
+        seed = request.seed if not request.uniform_offset else SeedStream(request.seed).derive(
+            "uniform-offset", request.uniform_offset)
+        # Single-token stop sequences end generation in the engine; the caller cuts longer ones.
+        stops = [stop[0] for stop in request.stop_sequences if len(stop) == 1]
+        return self._sampling_params_factory(
+            max_tokens=int(request.max_new_tokens),
+            temperature=float(policy.temperature),
+            top_p=float(policy.top_p),
+            top_k=0 if policy.top_k is None else int(policy.top_k),
+            seed=int(seed),
+            # The K most likely tokens' processed log-probabilities give the policy's top-K statistic.
+            logprobs=(0 if statistic is None else
+                      (statistic.top_k or 0) + int(self._scalar_self_certainty)),
+            flat_logprobs=self._flat_logprobs,
+            logit_bias=self._logit_bias(),
+            ignore_eos=True,
+            stop_token_ids=[int(token) for token in (
+                stops if policy.eos_token_id is None else [policy.eos_token_id, *stops]
+            )],
+            detokenize=False,
+            skip_special_tokens=False,
+            spaces_between_special_tokens=False,
+        )
+
+    def _score_params(self) -> Any:
+        return self._sampling_params_factory(
+            max_tokens=1, temperature=1.0, top_p=1.0, top_k=0, seed=0, prompt_logprobs=0, ignore_eos=True,
+            detokenize=False, skip_special_tokens=False, spaces_between_special_tokens=False,
+        )
+
+    def _generate(self, prompts: Sequence[Any], params: Any, fused: dict[str, FusedValues] | None = None) -> list[Any]:
+        """One engine call. With the fused worker every finished request's values are released, and kept in ``fused``."""
+
+        if self._closed:
+            raise RuntimeError("vLLM backend is closed")
+        kwargs = {"sampling_params": params, "use_tqdm": False}
+        if self._lora_request is not None:
+            kwargs["lora_request"] = self._lora_request
+        self._engine_requests_started(len(prompts))
+        try:
+            with self._engine_lock:
+                outputs = list(self._engine.generate(list(prompts), **kwargs))
+                if self._fused_logprobs:
+                    request_ids = [getattr(output, "request_id", None) for output in outputs]
+                    if None in request_ids or len(set(request_ids)) != len(request_ids):
+                        raise RuntimeError("vLLM returned missing or duplicate request ids")
+                    released = self._merge_fused(self._engine.collective_rpc(
+                        "pop_fused_logprobs", args=(tuple(map(str, request_ids)),)))
+                    if fused is not None:
+                        fused.update(released)
+        finally:
+            self._engine_requests_finished(len(prompts))
+        return outputs
+
+    @staticmethod
+    def _merge_fused(responses: Any) -> dict[str, FusedValues]:
+        """The fused values of each tensor-parallel worker, which must agree."""
+
+        merged: dict[str, FusedValues] = {}
+        for response in (responses,) if isinstance(responses, Mapping) else tuple(responses):
+            if not isinstance(response, Mapping):
+                raise RuntimeError("the fused worker returned an invalid payload")
+            for raw_request_id, (raw_references, raw_certainties) in response.items():
+                values = (tuple(map(float, raw_references)), tuple(map(float, raw_certainties)))
+                if len(values[0]) != len(values[1]) or not all(isfinite(value) for part in values for value in part):
+                    raise RuntimeError("the fused worker returned mismatched or non-finite values")
+                previous = merged.setdefault(str(raw_request_id), values)
+                if any(len(old) != len(new) or not all(isclose(left, right, rel_tol=1e-5, abs_tol=1e-6)
+                                                       for left, right in zip(old, new))
+                       for old, new in zip(previous, values)):
+                    raise RuntimeError("tensor-parallel vLLM workers disagreed on fused log-probabilities")
+        return merged
+
+    def _engine_requests_started(self, count: int) -> None:
+        with self._statistics_lock:
+            self._active_engine_requests += int(count)
+            self._maximum_in_flight_requests = max(self._maximum_in_flight_requests, self._active_engine_requests)
+
+    def _engine_requests_finished(self, count: int) -> None:
+        with self._statistics_lock:
+            self._active_engine_requests -= int(count)
+            if self._active_engine_requests < 0:
+                raise RuntimeError("vLLM in-flight request accounting became negative")
+
+    @staticmethod
+    def _completion(output: Any) -> Any:
+        completions = getattr(output, "outputs", None)
+        if not completions or len(completions) != 1:
+            raise RuntimeError("vLLM must return exactly one completion per request")
+        return completions[0]
+
+    def _sample_from_output(self, request: GenerationRequest, output: Any,
+                            fused: FusedValues | None = None) -> tuple[SequenceSample, int, int, int]:
+        completion = self._completion(output)
+        tokens = tuple(int(token) for token in completion.token_ids)
+        positions = completion.logprobs
+        statistic = self._statistic(request)
+        scalar = self._scalar_self_certainty and statistic is not None
+        token_logprobs, statistics = (scalar_generated_logprobs if scalar else _generated_logprobs)(
+            positions, tokens, None if statistic is None else statistic.top_k)
+        if statistic is not None and statistic.top_k is None and not scalar:
+            if fused is None:
+                raise RuntimeError("the fused worker omitted a generated request")
+            statistics = fused[1]
+        # The fused worker reports the base probabilities at temperature 1.
+        reference_values = None if fused is None or request.reference_temperature != 1 else fused[0]
+        reference_sampling = request.reference_policy
+        if reference_values is None and request.sampling == reference_sampling:
+            reference_values = token_logprobs
+        if reference_values is not None:
+            if len(reference_values) != len(tokens):
+                raise RuntimeError("vLLM returned an invalid reference log-probability shape")
+            if any(not isfinite(value) for value in reference_values):
+                raise RuntimeError("vLLM returned a non-finite reference log-probability")
+        finish_reason = str(getattr(completion, "finish_reason", "length") or "length")
+        eos = request.sampling.eos_token_id
+        if eos is not None and tokens and tokens[-1] == eos:
+            finish_reason = "eos"
+        sample = SequenceSample(
+            prefix=request.prefix, token_ids=tokens, token_logprobs=token_logprobs, policy_id=request.sampling.policy_id,
+            model_id=self.model_id, request_id=request.request_id, finish_reason=finish_reason,
+            reference_token_logprobs=reference_values,
+            reference_policy_id=None if reference_values is None else reference_sampling.policy_id,
+            token_statistics=statistics,
+        )
+        prompt_length = len(self._model_prefix(request.prefix))
+        cached = min(prompt_length, int(getattr(output, "num_cached_tokens", 0) or 0))
+        return sample, prompt_length - cached, cached, prompt_length - cached + max(0, len(tokens) - 1)
+
+    def sample_batch(self, requests: Sequence[GenerationRequest]) -> list[SequenceSample]:
+        if not requests:
+            return []
+        fused: dict[str, FusedValues] = {}
+        params = [self._sampling_params(request) for request in requests]
+        self._bind_sampling_constraints(requests, params)
+        outputs = self._generate([self._prompt(request.prefix) for request in requests],
+                                 params, fused)
+        if len(outputs) != len(requests):
+            raise RuntimeError("vLLM returned an invalid number of request outputs")
+        parsed = [self._sample_from_output(request, output, fused.get(str(getattr(output, "request_id", None))))
+                  for request, output in zip(requests, outputs, strict=True)]
+        # Each request carries its own cost, so a caller can bill it while other callers share the engine.
+        samples = [replace(item[0], forward_token_slots=item[3]) for item in parsed]
+        forward_slots = sum(item[3] for item in parsed)
+        fused = [sample for sample in samples
+                 if sample.reference_token_logprobs is not None and sample.reference_policy_id != sample.policy_id]
+        with self._statistics_lock:
+            self._sample_calls += 1
+            self._sampled_sequences += len(samples)
+            self._generated_tokens += sum(len(sample.token_ids) for sample in samples)
+            self._prefill_tokens += sum(item[1] for item in parsed)
+            self._shared_prefill_tokens_saved += sum(item[2] for item in parsed)
+            self._generation_forward_token_slots += forward_slots
+            self._estimated_dense_forward_flops += dense_forward_flops(self.parameter_count, forward_slots)
+            self._engine_requests += len(samples)
+            self._fused_reference_sequences += len(fused)
+            self._fused_reference_tokens += sum(len(sample.token_ids) for sample in fused)
+        return samples
+
+    def _supports_native_score(self, sampling: SamplingConfig | None) -> bool:
+        # Prompt log-probabilities ignore logit biases, so a penalized model is scored elsewhere.
+        policy = sampling or SamplingConfig()
+        return self._penalty is None and policy.temperature == 1 and policy.full_support
+
+    def _score_native(self, items: Sequence[tuple[int, ScoreRequest, TokenSequence]],
+                      results: list[tuple[float, ...]]) -> tuple[int, int, int]:
+        if not items:
+            return 0, 0, 0
+        prompts = [self._prompt(self._model_prefix(request.prefix) + continuation) for _, request, continuation in items]
+        outputs = self._generate(prompts, self._score_params())
+        if len(outputs) != len(items):
+            raise RuntimeError("vLLM returned an invalid number of scoring outputs")
+        forward_slots = cached_tokens = 0
+        for (index, request, continuation), output in zip(items, outputs, strict=True):
+            prompt_logprobs = getattr(output, "prompt_logprobs", None)
+            prefix = self._model_prefix(request.prefix)
+            if prompt_logprobs is None or len(prompt_logprobs) != len(prefix) + len(continuation):
+                raise RuntimeError("vLLM returned an invalid prompt log-probability shape")
+            results[index] = tuple(_logprob_value(position, token)
+                                   for position, token in zip(prompt_logprobs[len(prefix):], continuation, strict=True))
+            prompt_length = len(prefix) + len(continuation)
+            cached = min(prompt_length, int(getattr(output, "num_cached_tokens", 0) or 0))
+            forward_slots += prompt_length - cached
+            cached_tokens += cached
+        return len(items), forward_slots, cached_tokens
+
+    def _run_delegated_score(self, requests: Sequence[ScoreRequest], method: str, **kwargs: Any):
+        """Run ``method`` on the exact backend and return its outputs, forward slots and FLOPs."""
+
+        if self._scoring_backend is None:
+            raise RuntimeError("an exact scoring backend is not configured")
+        callback = getattr(self._scoring_backend, method, None)
+        if callback is None:
+            raise ValueError(f"the configured exact scoring backend does not implement {method}")
+        snapshot = getattr(self._scoring_backend, "snapshot")
+        with self._delegated_score_lock:
+            before = snapshot()
+            outputs = callback(requests, **kwargs)
+            after = snapshot()
+        return (outputs, int(after.score_forward_token_slots) - int(before.score_forward_token_slots),
+                int(after.estimated_dense_forward_flops) - int(before.estimated_dense_forward_flops))
+
+    def score_batch(self, requests: Sequence[ScoreRequest]) -> list[tuple[float, ...]]:
+        flattened = [(request, continuation) for request in requests for continuation in request.continuations]
+        results: list[tuple[float, ...]] = [()] * len(flattened)
+        native: list[tuple[int, ScoreRequest, TokenSequence]] = []
+        delegated: list[tuple[int, ScoreRequest, TokenSequence]] = []
+        for index, (request, continuation) in enumerate(flattened):
+            if continuation:
+                (native if self._supports_native_score(request.sampling) else delegated).append(
+                    (index, request, continuation))
+        native_count, score_slots, cached_tokens = self._score_native(native, results)
+        delegated_slots = delegated_flops = 0
+        if delegated:
+            if self._scoring_backend is None:
+                policies = sorted({(item[1].sampling or SamplingConfig()).policy_id for item in delegated})
+                raise ValueError("vLLM prompt log-probabilities cannot exactly score temperature/top-k/top-p policies or "
+                                 "ar.model.token_penalty; configure an exact scoring_backend for: " + ", ".join(policies))
+            delegated_outputs, delegated_slots, delegated_flops = self._run_delegated_score(
+                [ScoreRequest(request.prefix, (continuation,), request.sampling) for _, request, continuation in delegated],
+                "score_batch",
+            )
+            if len(delegated_outputs) != len(delegated):
+                raise RuntimeError("exact scoring backend returned an invalid result count")
+            for (index, _, continuation), scores in zip(delegated, delegated_outputs, strict=True):
+                if len(scores) != len(continuation):
+                    raise RuntimeError("exact scoring backend returned an invalid score shape")
+                results[index] = scores
+        with self._statistics_lock:
+            self._score_calls += 1
+            self._scored_tokens += sum(len(continuation) for _, continuation in flattened)
+            self._shared_prefill_tokens_saved += cached_tokens
+            self._score_forward_token_slots += score_slots + delegated_slots
+            self._estimated_dense_forward_flops += dense_forward_flops(self.parameter_count, score_slots) + delegated_flops
+            self._engine_requests += native_count
+            self._native_score_sequences += native_count
+            self._delegated_score_sequences += len(delegated)
+            self._delegated_score_forward_token_slots += delegated_slots
+            self._delegated_estimated_dense_forward_flops += delegated_flops
+        return results
+
+    def records(self, statistic: TokenStatistic, sampling: SamplingConfig) -> bool:
+        """Top-K and Ascend scalar statistics use the actual sampling policy.
+
+        The GPU fused worker separately reads the unpenalized model at temperature 1.
+        """
+
+        if statistic.top_k is not None or self._scalar_self_certainty:
+            return statistic.matches(sampling)
+        return self._fused_logprobs and self._penalty is None and statistic.policy.temperature == 1
+
+    def _statistic(self, request: GenerationRequest) -> TokenStatistic | None:
+        """The request's statistic when the engine's log-probabilities give it."""
+
+        statistic = request.statistic
+        return statistic if statistic is not None and self.records(statistic, request.sampling) else None
+
+    def token_statistics(self, requests: Sequence[ScoreRequest], statistic: TokenStatistic) -> list[tuple[float, ...]]:
+        """The exact backend reads token statistics, which need the whole next-token distribution.
+
+        vLLM's prompt log-probabilities cover only the given tokens, which is enough for IS and MH at the base policy.
+        """
+
+        requests = [replace(request, sampling=statistic.policy) for request in requests]
+        flattened = [continuation for request in requests for continuation in request.continuations]
+        outputs, slots, flops = self._run_delegated_score(requests, "token_statistics", statistic=statistic)
+        if len(outputs) != len(flattened):
+            raise RuntimeError("exact scoring backend returned an invalid result count")
+        with self._statistics_lock:
+            self._score_calls += 1
+            self._scored_tokens += sum(len(continuation) for continuation in flattened)
+            self._score_forward_token_slots += slots
+            self._estimated_dense_forward_flops += flops
+            self._delegated_score_sequences += len(flattened)
+            self._delegated_score_forward_token_slots += slots
+            self._delegated_estimated_dense_forward_flops += flops
+        return list(outputs)
+
+    def _engine_preemptions(self) -> int:
+        """The engine's ``vllm:num_preemptions`` counter, summed over its engine cores."""
+
+        metrics = self._metrics
+        return 0 if metrics is None else int(sum(
+            metric.value for metric in metrics() if metric.name == "vllm:num_preemptions"))
+
+    def snapshot(self) -> VLLMBackendSnapshot:
+        # A closed engine has unregistered its metrics, so the count keeps its last reading.
+        preemptions = None if self._closed else self._engine_preemptions() - self._preemption_baseline
+        with self._statistics_lock:
+            if preemptions is not None:
+                self._preemptions = preemptions
+            return VLLMBackendSnapshot(**{name: getattr(self, "_" + name) for name in VLLMBackendSnapshot.__dataclass_fields__})
+
+    def execution_config(self) -> dict[str, Any]:
+        """Effective settings; graph eligibility does not establish actual capture or execution."""
+        config = getattr(self._engine, "vllm_config", None)
+        if config is None:
+            config = getattr(getattr(self._engine, "llm_engine", None), "vllm_config", None)
+        scheduler = getattr(config, "scheduler_config", None)
+        compilation = getattr(config, "compilation_config", None)
+        mode = getattr(compilation, "cudagraph_mode", None)
+        return {
+            "flat_logprobs": self._flat_logprobs,
+            "scalar_self_certainty": self._scalar_self_certainty,
+            "stream_interval": getattr(scheduler, "stream_interval", None),
+            "async_scheduling": getattr(scheduler, "async_scheduling", None),
+            "enforce_eager": getattr(getattr(config, "model_config", None), "enforce_eager", None),
+            "quantization": getattr(getattr(config, "model_config", None), "quantization", None),
+            "cudagraph_mode": None if mode is None else str(mode),
+            "cudagraph_capture_sizes": getattr(compilation, "cudagraph_capture_sizes", None),
+            "compile_sizes": getattr(compilation, "compile_sizes", None),
+            "compile_ranges_endpoints": getattr(compilation, "compile_ranges_endpoints", None),
+        }
+
+    def encode(self, text: str, *, add_special_tokens: bool = True) -> TokenSequence:
+        return tuple(int(token) for token in self.tokenizer.encode(text, add_special_tokens=add_special_tokens))
+
+    def decode(self, tokens: TokenSequence, *, skip_special_tokens: bool = True) -> str:
+        return str(self.tokenizer.decode(list(tokens), skip_special_tokens=skip_special_tokens))
+
+    def direct_generate(self, prefix: TokenSequence, *, max_new_tokens: int, num_beams: int = 1) -> TokenSequence:
+        """Run the greedy/beam baseline without changing algorithm sampling."""
+
+        if max_new_tokens <= 0 or num_beams <= 0:
+            raise ValueError("generation length and beam count must be positive")
+        if self._scalar_self_certainty and num_beams > 1:
+            raise ValueError("beam search requires scalar_self_certainty=false")
+        model_prefix = self._model_prefix(prefix)
+        prompt = self._prompt(model_prefix)
+        if num_beams == 1:
+            params = self._sampling_params_factory(
+                max_tokens=int(max_new_tokens), temperature=0.0, top_p=1.0, top_k=0, seed=0,
+                logit_bias=self._logit_bias(), ignore_eos=False, stop_token_ids=[], detokenize=False,
+                skip_special_tokens=False, spaces_between_special_tokens=False,
+            )
+            outputs = self._generate([prompt], params)
+            if len(outputs) != 1:
+                raise RuntimeError("vLLM returned an invalid greedy output count")
+            return tuple(int(token) for token in self._completion(outputs[0]).token_ids)
+
+        if self._penalty is not None:
+            raise ValueError("vLLM's offline beam search cannot apply ar.model.token_penalty; use the transformers "
+                             "engine or the asynchronous vLLM engine")
+        kwargs: dict[str, Any] = {"prompts": [prompt], "use_tqdm": False, "params": self._beam_search_params_factory(
+            beam_width=int(num_beams), max_tokens=int(max_new_tokens), ignore_eos=False)}
+        if self._lora_request is not None:
+            kwargs["lora_request"] = self._lora_request
+        outputs = list(self._engine.beam_search(**kwargs))
+        if len(outputs) != 1 or not getattr(outputs[0], "sequences", None):
+            raise RuntimeError("vLLM returned an invalid beam-search output")
+        full_tokens = tuple(int(token) for token in outputs[0].sequences[0].tokens)
+        if full_tokens[: len(model_prefix)] != model_prefix:
+            raise RuntimeError("vLLM beam-search output did not preserve the prompt")
+        return full_tokens[len(model_prefix) :]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        shutdown = getattr(self._engine, "shutdown", None)
+        if shutdown is None:
+            shutdown = getattr(getattr(self._engine, "llm_engine", None), "shutdown", None)
+        if shutdown is not None and inspect.isawaitable(shutdown()):
+            raise RuntimeError("an asynchronous vLLM engine requires AsyncVLLMBackend")
+
+    def __enter__(self) -> "VLLMBackend":
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()
+
+
+class AsyncVLLMBackend(VLLMBackend):
+    """Persistent AsyncLLM backend with cross-caller continuous batching."""
+
+    supports_native_continuous_batching = True
+
+    def __init__(self, engine: Any | None, tokenizer: Any, *, engine_factory: Callable[[], Any] | None = None,
+                 streaming_output_kind: Any = 1,
+                 **options: Any) -> None:
+        if (engine is None) == (engine_factory is None):
+            raise ValueError("provide exactly one of engine or engine_factory")
+        self._runner = _AsyncLoopRunner(engine_factory if engine_factory is not None else lambda: engine)
+        self._request_counter = itertools.count()
+        self._request_counter_lock = threading.Lock()
+        self._streaming_output_kind = streaming_output_kind
+        super().__init__(self._runner.engine, tokenizer, **options)
+        from inference_scaling.arllm.backends.scheduling import SchedulerConfig
+        self.configure_scheduler(SchedulerConfig(enabled=False))
+
+    def configure_scheduler(self, config) -> None:
+        from inference_scaling.arllm.backends.scheduling import AsyncAdmissionPool
+        if hasattr(self, "_admission") and (self._admission.queue.active or self._admission.queue.pending):
+            raise RuntimeError("cannot reconfigure a busy scheduler")
+        self.scheduler_config = config
+        self._kv_checked_at, self._kv_cached = float("-inf"), 0.0
+        self._admission = AsyncAdmissionPool(config, self._kv_usage)
+
+    def _kv_usage(self) -> float:
+        if self._metrics is None:
+            return 0.0
+        now = time.monotonic()
+        if now - self._kv_checked_at >= .05:
+            self._kv_cached = max((float(metric.value) for metric in self._metrics()
+                                   if metric.name == "vllm:kv_cache_usage_perc"), default=0.0)
+            self._kv_checked_at = now
+        return self._kv_cached
+
+    @property
+    def supports_streaming_generation(self) -> bool:
+        # Fused full-vocabulary statistics are currently delivered only at completion.
+        return self.scheduler_config.enabled and not self._fused_logprobs
+
+    def open_generation_session(self):
+        if self._closed:
+            raise RuntimeError("vLLM backend is closed")
+        if not self.supports_streaming_generation:
+            raise ValueError("streaming scheduling requires the asynchronous non-fused vLLM backend")
+        from inference_scaling.arllm.backends.streaming import AsyncGenerationSession
+        return AsyncGenerationSession(self)
+
+    async def _stream_request(self, request, group, phase, checkpoint, emit) -> None:
+        from inference_scaling.arllm.backends.scheduling import Admission, GenerationEvent, SampleBuffer
+
+        request_id = self._next_request_id()
+        params = self._sampling_params(request)
+        params.output_kind = self._streaming_output_kind
+        prompt_length = len(self._model_prefix(request.prefix))
+        item = Admission(request_id, group, prompt_length, request.max_new_tokens, phase)
+        await self._admission.acquire(item)
+        total, cached, started, finished = 0, 0, False, False
+        outputs, events = 0, 0
+        chunk, progressed = SampleBuffer(), False
+        try:
+            kwargs = {"prompt": self._prompt(request.prefix), "sampling_params": params, "request_id": request_id}
+            if self._lora_request is not None:
+                kwargs["lora_request"] = self._lora_request
+            self._engine_requests_started(1)
+            started = True
+            async for output in self._engine.generate(**kwargs):
+                outputs += 1
+                sample, _, output_cached, _ = self._sample_from_output(request, output)
+                cached = max(cached, output_cached)
+                total += len(sample.token_ids)
+                if total > request.max_new_tokens:
+                    raise RuntimeError("stream exceeded its generation limit")
+                finished = bool(getattr(output, "finished", self._completion(output).finish_reason is not None))
+                if sample.token_ids and not progressed:
+                    self._admission.progress(request_id)
+                    progressed = True
+                chunk.append(sample)
+                ready = checkpoint is not None and total >= checkpoint
+                if ready or finished or (request.intermediate_events and len(chunk.tokens) >= 32):
+                    if finished:
+                        # Only the terminal delta determines the complete request's cost.
+                        chunk.last = replace(chunk.last, forward_token_slots=prompt_length - cached + max(0, total - 1))
+                    await emit(GenerationEvent(chunk.sample(), finished))
+                    events += 1
+                    chunk = SampleBuffer()
+                    if ready:
+                        checkpoint = None
+            if not finished:
+                raise RuntimeError("asynchronous vLLM stream omitted its terminal event")
+        finally:
+            try:
+                if started and not finished:
+                    await self._engine.abort(request_id)
+            finally:
+                if started:
+                    self._engine_requests_finished(1)
+                    # Before the first output, even the amount of executed prefill is unknown.
+                    prefill = prompt_length - cached if outputs else 0
+                    forward = prefill + max(0, total - 1)
+                    with self._statistics_lock:
+                        self._sample_calls += 1
+                        self._sampled_sequences += 1
+                        self._generated_tokens += total
+                        self._prefill_tokens += prefill
+                        self._shared_prefill_tokens_saved += cached
+                        self._generation_forward_token_slots += forward
+                        self._estimated_dense_forward_flops += dense_forward_flops(self.parameter_count, forward)
+                        self._engine_requests += 1
+                        self._stream_outputs += outputs
+                        self._stream_events += events
+                        self._cancelled_requests += int(not finished)
+                self._admission.finish(request_id, total if finished else None)
+
+    @classmethod
+    def _create(cls, engine_arguments: dict[str, Any], tokenizer: Any, fused_logprobs: bool,
+                **options: Any) -> "AsyncVLLMBackend":
+        from vllm.engine.arg_utils import AsyncEngineArgs
+        from vllm.sampling_params import RequestOutputKind
+        from vllm.v1.engine.async_llm import AsyncLLM
+
+        # Unscheduled batch calls need only final outputs. Scheduled calls use DELTA
+        # internally to release prefill capacity on the first token, then return one result.
+        options["sampling_params_factory"] = partial(options["sampling_params_factory"],
+                                                     output_kind=RequestOutputKind.FINAL_ONLY)
+        # The engine core process starts, and reads the model-runner environment, while the backend is constructed.
+        with _engine_worker(engine_arguments, fused_logprobs) as arguments:
+            return cls(None, tokenizer, engine_factory=lambda: AsyncLLM.from_engine_args(AsyncEngineArgs(**arguments)),
+                       fused_logprobs=fused_logprobs, streaming_output_kind=RequestOutputKind.DELTA,
+                       initial_strata=arguments.get("worker_cls") == _ASCEND_WORKER, **options)
+
+    def _initial_strata_rpc(self, method: str, entries: Any) -> Any:
+        async def call():
+            return await self._engine.collective_rpc(method, args=(entries,))
+        return self._runner.run(call())
+
+    def _next_request_id(self) -> str:
+        with self._request_counter_lock:
+            value = next(self._request_counter)
+        return f"inference-scaling:{self.model_id}:{value}"
+
+    async def _generate_one(self, prompt: Any, params: Any, fused: dict[str, FusedValues] | None = None,
+                            group: str | None = None) -> Any:
+        request_id = self._next_request_id()
+        admitted = self.scheduler_config.enabled
+        if admitted:
+            from inference_scaling.arllm.backends.scheduling import Admission
+            await self._admission.acquire(Admission(request_id, group or request_id,
+                                                    len(prompt["prompt_token_ids"]), params.max_tokens))
+            params = copy(params)
+            params.output_kind = self._streaming_output_kind
+        kwargs = {"prompt": prompt, "sampling_params": params, "request_id": request_id}
+        if self._lora_request is not None:
+            kwargs["lora_request"] = self._lora_request
+        self._engine_requests_started(1)
+        final = None
+        tokens, text = [], []
+        logprobs, prompt_logprobs, progressed = None, None, False
+        try:
+            async for output in self._engine.generate(**kwargs):
+                final = output
+                if admitted:
+                    completion = self._completion(output)
+                    tokens.extend(completion.token_ids)
+                    text.append(getattr(completion, "text", ""))
+                    logprobs = _append_logprobs(logprobs, completion.logprobs)
+                    if getattr(output, "prompt_logprobs", None):
+                        prompt_logprobs = output.prompt_logprobs
+                    if tokens and not progressed:
+                        self._admission.progress(request_id)
+                        progressed = True
+            if self._fused_logprobs:
+                # The worker keeps a request's values until released, whether or not the caller reads them.
+                released = self._merge_fused(await self._engine.collective_rpc("pop_fused_logprobs", args=((request_id,),)))
+                if fused is not None:
+                    fused.update(released)
+        finally:
+            self._engine_requests_finished(1)
+            if admitted:
+                self._admission.finish(request_id)
+        if final is None:
+            raise RuntimeError("asynchronous vLLM request returned no output")
+        if admitted:
+            completion = self._completion(final)
+            completion.token_ids, completion.logprobs = tokens, logprobs
+            if hasattr(completion, "text"):
+                completion.text = "".join(text)
+            if prompt_logprobs is not None:
+                final.prompt_logprobs = prompt_logprobs
+        return final
+
+    async def _generate_many(self, prompts: Sequence[Any], params: Any, fused: dict[str, FusedValues] | None) -> list[Any]:
+        policies = params if isinstance(params, list) else [params] * len(prompts)
+        if len(policies) != len(prompts):
+            raise ValueError("the number of vLLM sampling policies must match the prompts")
+        group = self._next_request_id()
+        return list(await asyncio.gather(*(self._generate_one(prompt, policy, fused, group)
+                                           for prompt, policy in zip(prompts, policies, strict=True))))
+
+    def _generate(self, prompts: Sequence[Any], params: Any, fused: dict[str, FusedValues] | None = None) -> list[Any]:
+        if self._closed:
+            raise RuntimeError("vLLM backend is closed")
+        return self._runner.run(self._generate_many(tuple(prompts), params, fused))
+
+    def _beam_score(self, tokens: Sequence[int], cumulative_logprob: float) -> float:
+        length = len(tokens)
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+        if eos is not None and tokens and int(tokens[-1]) == int(eos):
+            length -= 1
+        return cumulative_logprob / max(1, length)
+
+    async def _beam_search_async(self, prefix: TokenSequence, *, max_new_tokens: int, num_beams: int,
+                                 token_constraint=None) -> TokenSequence:
+        if self._scalar_self_certainty:
+            raise ValueError("constrained/beam search requires scalar_self_certainty=false")
+        params = self._sampling_params_factory(
+            max_tokens=1, temperature=0.0, top_p=1.0, top_k=0, seed=0, logprobs=2 * int(num_beams), flat_logprobs=False,
+            logit_bias=self._logit_bias(), ignore_eos=True, detokenize=False, skip_special_tokens=False,
+            spaces_between_special_tokens=False,
+        )
+        model_prefix = self._model_prefix(prefix)
+        active: list[tuple[TokenSequence, float]] = [(model_prefix, 0.0)]
+        completed: list[tuple[TokenSequence, float]] = []
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+        for _ in range(max_new_tokens):
+            forced = [None if token_constraint is None else token_constraint(
+                prefix + tokens[len(model_prefix):]) for tokens, _ in active]
+            outputs = iter(await asyncio.gather(*(self._generate_one(self._prompt(tokens), params)
+                                                  for (tokens, _), token in zip(active, forced) if token is None)))
+            candidates: list[tuple[TokenSequence, float]] = []
+            for (tokens, cumulative), forced_token in zip(active, forced, strict=True):
+                if forced_token is None:
+                    positions = self._completion(next(outputs)).logprobs
+                    if positions is None or len(positions) != 1:
+                        raise RuntimeError("vLLM beam expansion omitted next-token log-probabilities")
+                    choices = positions[0]
+                else:
+                    choices = {forced_token: 0.0}
+                for token, value in choices.items():
+                    expanded = tokens + (int(token),)
+                    scored = cumulative + float(getattr(value, "logprob", value))
+                    (completed if eos is not None and int(token) == int(eos) else candidates).append((expanded, scored))
+            active = sorted(candidates, key=lambda item: self._beam_score(*item), reverse=True)[:num_beams]
+            if not active:
+                break
+        finalists = completed + active
+        if not finalists:
+            raise RuntimeError("vLLM beam search produced no sequence")
+        full_tokens = max(finalists, key=lambda item: self._beam_score(*item))[0]
+        if full_tokens[: len(model_prefix)] != model_prefix:
+            raise RuntimeError("vLLM beam-search output did not preserve the prompt")
+        return full_tokens[len(model_prefix) :]
+
+    supports_constrained_beam_search = True
+
+    def direct_generate(self, prefix: TokenSequence, *, max_new_tokens: int, num_beams: int = 1,
+                        token_constraint=None) -> TokenSequence:
+        if num_beams == 1 and token_constraint is None:
+            return super().direct_generate(prefix, max_new_tokens=max_new_tokens, num_beams=num_beams)
+        if max_new_tokens <= 0 or num_beams <= 0:
+            raise ValueError("generation length and beam count must be positive")
+        return self._runner.run(self._beam_search_async(prefix, max_new_tokens=max_new_tokens, num_beams=num_beams,
+                                                       token_constraint=token_constraint))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._runner.close()

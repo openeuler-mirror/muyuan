@@ -1,0 +1,412 @@
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import { validateToolArguments } from "@earendil-works/pi-ai";
+import { type ActionProjectionRule, resolveActionProjectionRules } from "./action-key-projection.ts";
+import { buildActionKey, type ActionKey, type ActionSemanticsRegistry, PI_ACTION_SEMANTICS } from "./action-semantics.ts";
+import { createResourceSnapshotExecutionWorld, type AgentExecutionWorld, type SpeculativeToolExecutionContext } from "./agent-execution-world.ts";
+import { DEFAULTS, type DrafterRequestSettings, normalizeDrafterRequestSettings } from "./common.ts";
+import {
+	type AgentConsumeInput, type AgentStartInput, type AgentStateData, type AgentRuntime, type DrafterModelOptions, definitionSchemaHashes,
+} from "./agent-runtime-types.ts";
+import type { ActorForkPlanSource } from "./actor-fork-plan-source.ts";
+import type { ExecutionWorldDiagnosticSnapshot, ExecutionOperationBinding, SpeculativeExecutionRoute, WorldCheckpoint } from "./execution-world.ts";
+import { createDrafterPlanSource, type DrafterPlanSnapshot } from "./drafter-plan-source.ts";
+import { PATTERN_AWARE_DEFAULTS, type PatternAwareSettings, type PatternAwareStore, patternAwareSettings } from "./pattern-aware.ts";
+import { createPatternPlanSource } from "./pattern-plan-source.ts";
+import { createExecutionPreparation } from "./execution-preparation.ts";
+import { PI_BASH_TIMEOUT_PROJECTION_RULE, PI_GREP_LITERAL_PROJECTION_RULE, piToolErrorSettlement } from "./pi-tool-invocation.ts";
+import { TimelineInterval, type TimelineDependency } from "./task-timing.ts";
+import {
+	type CandidatePreflight,
+	type PreparedActorCall, type SpeculativeActionEvent, type SpeculativeActionSettings, makeSpeculativeActionRuntime,
+} from "./runtime.ts";
+import { normalizeSelfSpeculationSettings, type SelfSpeculationSettingsInput } from "./self-speculation.ts";
+import { stableValueHash } from "./stable-value-hash.ts";
+import { booleanOr, positiveInteger, positiveMilliseconds } from "./setting-input.ts";
+import { normalizeSchedulingSettings } from "./scheduling-settings.ts";
+import { immutableSnapshot, isImmutableSnapshot } from "./stable-json.ts";
+import { type ToolInvocation, type ToolSettlement, toolObservationKey } from "./tool-settlement.ts";
+import { ToolExecutionGateway, type ToolOperation } from "./tool-execution-gateway.ts";
+import { createSystemResourceMonitor, type ExecutionResourceMonitor } from "./system-resources.ts";
+import { UNRESTRICTED_PROCESS_EFFECTS } from "./effect-model.ts";
+import { isCompletedProcessExecutionWorld, isRestorableProcessExecutionWorld } from "./linux-process-world.ts";
+
+const ACTOR_OPERATION = Symbol("actor-operation");
+const RAW_ACTOR_CALL = Symbol("raw-actor-call");
+type AgentToolOperation = ToolOperation & { readonly invocation?: ToolInvocation };
+type BoundActorCall = AgentConsumeInput & { readonly [ACTOR_OPERATION]?: () => Promise<AgentToolOperation>; readonly [RAW_ACTOR_CALL]?: true };
+
+export interface SpeculativeAgentSettingsInput extends Partial<DrafterRequestSettings>, Partial<Omit<SpeculativeActionSettings, "sourceConfig">> {
+	readonly patternAware?: Partial<PatternAwareSettings>;
+	readonly selfSpeculation?: SelfSpeculationSettingsInput;
+}
+
+/** Shared host/package boundary: the TUI and runtime must interpret saved policy identically. */
+export function normalizeSpeculativeAgentSettings(input: SpeculativeAgentSettingsInput = {}) {
+	return {
+		...normalizeDrafterRequestSettings(input),
+		enabled: booleanOr(input.enabled, DEFAULTS.enabled),
+		reuseEnabled: booleanOr(input.reuseEnabled, DEFAULTS.reuseEnabled),
+		drafterEnabled: booleanOr(input.drafterEnabled, DEFAULTS.drafterEnabled),
+		prepareObservedOperations: booleanOr(input.prepareObservedOperations, DEFAULTS.prepareObservedOperations),
+		...(input.tools === undefined ? {} : { tools: Array.isArray(input.tools) && input.tools.every(tool => typeof tool === "string") ? [...new Set(input.tools)] : [] }),
+		candidateLimit: positiveInteger(input.candidateLimit, DEFAULTS.candidateLimit),
+		maxConcurrentActions: positiveInteger(input.maxConcurrentActions, DEFAULTS.maxConcurrentActions),
+		resourceCacheMaxEntries: positiveInteger(input.resourceCacheMaxEntries, DEFAULTS.resourceCacheMaxEntries),
+		resourceCacheMaxBytes: positiveInteger(input.resourceCacheMaxBytes, DEFAULTS.resourceCacheMaxBytes),
+		predictionTimeoutMs: positiveMilliseconds(input.predictionTimeoutMs, DEFAULTS.predictionTimeoutMs),
+		scheduling: normalizeSchedulingSettings(input.scheduling),
+		patternAware: patternAwareSettings(input.patternAware ?? PATTERN_AWARE_DEFAULTS),
+		selfSpeculation: normalizeSelfSpeculationSettings(input.selfSpeculation),
+	} as const;
+}
+
+export interface SpeculativeAgentPreflightContext extends Pick<SpeculativeToolExecutionContext, "tool" | "toolName" | "args" | "action" | "signal"> {
+	readonly route: SpeculativeExecutionRoute;
+}
+
+export type { DraftOptionsContext } from "./agent-runtime-types.ts";
+
+export interface CreateSpeculativeActionHostOptions extends DrafterModelOptions {
+	/** Override host observations for embedding or deterministic tests. */
+	readonly resources?: ExecutionResourceMonitor;
+	/** Canonical K(a), projection, and resource-version semantics for this host. */
+	readonly actionSemantics?: ActionSemanticsRegistry;
+	/** Workspace root used for action canonicalization and resource validation. */
+	readonly cwd: string;
+	/** Runtime settings. Speculative production defaults off; caching, reuse and observation default on. */
+	readonly getSettings?: () => SpeculativeAgentSettingsInput | Promise<SpeculativeAgentSettingsInput>;
+	/** Bind the concrete executor used by both speculative and Actor calls; rejection fails this invocation. */
+	readonly resolveInvocation?: (tool: string, input: unknown, definition?: AgentTool) => ToolInvocation | undefined | Promise<ToolInvocation | undefined>;
+	/**
+	 * Non-interactive permission and policy check for speculative execution.
+	 * Candidates are rejected when this callback is absent.
+	 */
+	readonly preflight?: (context: SpeculativeAgentPreflightContext) => boolean | CandidatePreflight | Promise<boolean | CandidatePreflight>;
+	/** Lossless Π rules; each rule owns key relation, realized coverage, and output reconstruction. */
+	readonly projectionRules?: readonly ActionProjectionRule<ToolSettlement>[];
+	/** Actor probe source shared with the decoder-feedback coordinator. */
+	readonly actorForkPlanSource?: ActorForkPlanSource;
+	/** Ordered execution capabilities. A runtime-wide sandbox takes precedence over local fallbacks. */
+	readonly executionWorlds?: readonly AgentExecutionWorld[];
+	/** Dynamic policy for speculative execution and the public Host's native route; resource observation stays independent. */
+	readonly speculativeExecutionWorldEnabled?: (backend: string) => boolean;
+	/** Optional persistence root for workspace-hashed PatternAware state. */
+	readonly patternStateDirectory?: string;
+	/** The configured owner already reserved the store directory; publication may not recreate it. */
+	readonly patternStoreReservedRoot?: boolean;
+	/** Stable logical workspace identity when physical checkout paths are ephemeral. */
+	readonly patternWorkspaceIdentity?: string;
+	/** Optional injected store, primarily for embedding and deterministic tests. */
+	readonly patternStore?: PatternAwareStore | Promise<PatternAwareStore>;
+	readonly onEvent?: (event: SpeculativeActionEvent<string>) => void | Promise<void>;
+}
+
+export interface SpeculativeActionHost {
+	readonly sessionID: string;
+	readonly runtime: AgentRuntime;
+	readonly executionWorldDiagnostics: (refresh?: boolean) => Promise<readonly ExecutionWorldDiagnosticSnapshot[]>;
+	readonly startTurn: (input: Omit<AgentStartInput, "sessionID">, signal?: AbortSignal) => Promise<void>;
+	readonly previewActorTool: (input: { readonly turnID: string; readonly tool: string }, signal?: AbortSignal) => Promise<void>;
+	/** Raw streamed arguments; preparation is provisional and never binds the final Actor call. */
+	readonly previewActorCall: (input: Omit<AgentConsumeInput, "sessionID">, signal?: AbortSignal) => Promise<void>;
+	/** One tool outlet: reuse lookup, Actor fallback, timing, and settlement reporting. */
+	readonly execute: (
+		input: SpeculativeToolExecutionInput,
+		signal: AbortSignal | undefined,
+		executor: (operation: AgentToolOperation) => Promise<AgentToolResult<unknown>>,
+	) => Promise<AgentToolResult<unknown>>;
+	readonly finishTurn: (turnID: string, terminal?: boolean) => Promise<void>;
+	readonly drafterBudgetSnapshot: () => ActionDrafterBudgetSnapshot;
+	readonly dispose: () => Promise<void>;
+}
+
+export interface SpeculativeToolExecutionInput {
+	readonly turnID?: string;
+	readonly id?: string;
+	readonly tool: string;
+	/** Final host-prepared arguments; this outlet must not prepare them a second time. */
+	readonly args: unknown;
+	readonly tools: readonly AgentTool[];
+}
+
+export type ActionDrafterBudgetSnapshot = DrafterPlanSnapshot;
+
+export { patternPlanActionID } from "./pattern-plan-source.ts";
+
+/**
+ * Build source-neutral speculative plan execution for a host. The host owns lifecycle and tool interception.
+ */
+export function createSpeculativeActionHost(sessionID: string, options: CreateSpeculativeActionHostOptions): SpeculativeActionHost {
+	return createAgentExecutionHost(sessionID, options, (world, operation) => world.isolation === "resource_snapshot" ||
+		isRestorableProcessExecutionWorld(world) && operation !== "observation" &&
+			(operation === "speculation" || options.speculativeExecutionWorldEnabled?.(world.id) !== false) || operation === "speculation" &&
+		(world.isolation === "workspace_branch" || isCompletedProcessExecutionWorld(world))
+		? undefined : "Outside the supported resource closure; the Actor executes this operation");
+}
+
+/** Internal engine assembly for backend qualification. The public Pi Host always applies its resource closure. */
+export function createAgentExecutionHost(sessionID: string, options: CreateSpeculativeActionHostOptions,
+	admission?: (world: AgentExecutionWorld, operation: "speculation" | "observation" | "observeOperations") => string | undefined): SpeculativeActionHost {
+	const actionSemantics = options.actionSemantics ?? PI_ACTION_SEMANTICS;
+	const projectionRules = resolveActionProjectionRules([...options.projectionRules ?? [], PI_BASH_TIMEOUT_PROJECTION_RULE, PI_GREP_LITERAL_PROJECTION_RULE], actionSemantics);
+	let inputMaxBytes = DEFAULTS.resourceCacheMaxBytes;
+	const executionWorlds = [...new Set(options.executionWorlds ?? [])];
+	if (
+		!executionWorlds.some((world) => world.id === "resource_version" && world.scope === "fallback" && world.isolation === "resource_snapshot")
+	) {
+		executionWorlds.push(createResourceSnapshotExecutionWorld(actionSemantics, { maxBytes: () => inputMaxBytes }));
+	}
+	const inClosure = (world: AgentExecutionWorld) => !admission?.(world, "speculation");
+	const executionGateway = new ToolExecutionGateway(executionWorlds, options.speculativeExecutionWorldEnabled, undefined, admission);
+	const resolveExecutionRoute = (tool: string, signal?: AbortSignal, action?: ActionKey, parentCheckpoint?: WorldCheckpoint) => {
+		const definition = actionSemantics.definition(action ?? tool);
+		return definition && executionGateway.resolve({ tool, action, parentCheckpoint,
+			backend: (action?.executionContext as ToolInvocation | undefined)?.operation?.binding.backend,
+			effect: definition.effect, requirements: definition.requirements }, { cwd: options.cwd, signal });
+	};
+	const resolveSettings = async (): Promise<SpeculativeActionSettings> => {
+		const { patternAware, selfSpeculation, drafterMaxDepth, drafterMaxTokens, drafterTaskMaxRequests, drafterTaskMaxTokens,
+			drafterDeterministicCandidates, drafterTemperatureMin, drafterTemperatureMax, drafterPatternHints, ...policy } =
+			normalizeSpeculativeAgentSettings(await options.getSettings?.());
+		inputMaxBytes = policy.resourceCacheMaxBytes;
+		return {
+			...policy,
+			sourceConfig: {
+				drafterMaxDepth, drafterMaxTokens, drafterTaskMaxRequests, drafterTaskMaxTokens, drafterDeterministicCandidates, drafterTemperatureMin, drafterTemperatureMax, drafterPatternHints,
+				patternAware,
+				actorForkActionEnabled:
+					options.actorForkPlanSource !== undefined &&
+					selfSpeculation.enabled &&
+					selfSpeculation.forkEnabled &&
+					selfSpeculation.forkActionEnabled &&
+					selfSpeculation.forkTransport !== "provider",
+			},
+		};
+	};
+	const drafterPlans = createDrafterPlanSource({
+		sessionID,
+		draftModel: options.draftModel,
+		getDraftOptions: options.getDraftOptions,
+		complete: options.complete,
+		drafterBudget: options.drafterBudget,
+		patternHints: (hint) => patternPlans.hints(hint),
+	});
+	const patternPlans = createPatternPlanSource({
+		sessionID,
+		cwd: options.cwd,
+		actionSemantics,
+		projectionRules,
+		stateDirectory: options.patternStateDirectory,
+		reservedRoot: options.patternStoreReservedRoot,
+		workspaceIdentity: options.patternWorkspaceIdentity,
+		store: options.patternStore,
+	});
+	const executionPreparation = createExecutionPreparation(options.cwd, actionSemantics);
+	const resolveBinding = async (tool: string, input: unknown, schemaHash?: string, definition?: AgentTool) => {
+		// A candidate runs its key's canonical input (a redundant `cd <cwd> &&` dropped): its invocation is resolved from that input.
+		const resolved = await options.resolveInvocation?.(tool, (() => { try { return actionSemantics.definition(tool)?.canonicalize(input, options.cwd)?.input ?? input; } catch { return input; } })(), definition);
+		const invocation = resolved && Object.freeze({ ...resolved,
+			...(resolved.observation ? { observation: Object.freeze({ ...resolved.observation, content: immutableSnapshot(resolved.observation.content) }) } : {}),
+			...(resolved.identity !== undefined ? { identity: immutableSnapshot(resolved.identity) } : {}),
+			...(resolved.process ? { process: immutableSnapshot(resolved.process) } : {}),
+		});
+		const action = schemaHash === undefined || ![input, invocation?.identity, invocation?.process].every(isImmutableSnapshot)
+			? undefined : actionSemantics.buildKey(tool, input, options.cwd, schemaHash, invocation
+			? { fingerprint: stableValueHash(invocation.filesystem
+				? [invocation.identity ?? invocation, { filesystemRoot: invocation.filesystemRoot ?? options.cwd }]
+				: invocation.identity ?? invocation), context: invocation, semantics: invocation.semantics } : undefined);
+		return { ...(invocation ? { invocation } : {}), ...(action ? { action } : {}) };
+	};
+	const checkPermission = async (tool: AgentTool | undefined, context: Omit<SpeculativeAgentPreflightContext, "tool">, recheck = false): Promise<CandidatePreflight> => {
+		const reason = recheck ? "permission_or_policy_changed" : "permission_or_policy";
+		const result = tool && options.preflight ? await options.preflight({ ...context, tool }) : false;
+		if (typeof result === "boolean") return result ? { ok: true } : { ok: false, reason };
+		return recheck && !result.ok ? { ...result, reason } : result;
+	};
+	const runtime = makeSpeculativeActionRuntime<
+		string,
+		ToolSettlement,
+		AgentStartInput,
+		AgentConsumeInput,
+		AgentConsumeInput,
+		AgentStateData
+	>({
+		actionSemantics,
+		resources: options.resources ?? createSystemResourceMonitor(async () => (await options.getSettings?.())?.scheduling),
+		sources: [patternPlans.source, drafterPlans.source, executionPreparation.source, ...(options.actorForkPlanSource ? [options.actorForkPlanSource.source] : [])],
+		settings: resolveSettings,
+		definitions: (input) =>
+			input.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })),
+		stateData: (input) => ({
+			tools: new Map(input.tools.map((tool) => [tool.name, tool])),
+			// Concrete candidates prepare their routes inside the runtime's resource budget.
+			// Warming every possible tool here would bypass that budget before a proposal exists.
+			schemaHashes: definitionSchemaHashes(input.tools.map((tool) => ({ name: tool.name, inputSchema: tool.parameters }))),
+		}),
+		actionKey: async (toolName, input, context) => {
+			let tool: AgentTool | undefined;
+			let validated: unknown;
+			if (context.type === "consume") {
+				const call = context.consumeInput as BoundActorCall, bind = call[ACTOR_OPERATION];
+				if (bind) return (await bind()).action;
+				tool = call.tools.find((candidate) => candidate.name === toolName);
+				validated = call[RAW_ACTOR_CALL] ? tool && prepareToolArguments(tool, input) : immutableSnapshot(input);
+			} else { tool = context.data.tools.get(toolName); validated = tool && prepareToolArguments(tool, input); }
+			if (!tool || validated === undefined) return undefined;
+			const schemaHash =
+				context.type === "consume" ? stableValueHash(tool.parameters ?? null) : context.data.schemaHashes[toolName];
+			const { action, invocation } = await resolveBinding(toolName, validated, schemaHash, tool);
+			const operation = context.type === "start" ? context.operation : undefined;
+			if (!operation) return action;
+			const definition = action && actionSemantics.definition(action);
+			if (!action || !invocation || !definition || operation.permissionHash !== action.hash) return undefined;
+			const epoch = `${definition.epoch}:operation:${operation.backend}`;
+			return buildActionKey({ ...action, input: { operation: operation.identity }, semanticsEpoch: epoch,
+				semantics: { ...definition, resourceScope: undefined, ...operation.semantics, epoch, projectors: [] },
+				executionContext: Object.freeze({ ...invocation, operation: Object.freeze({ binding: operation, permission: action }) }),
+			});
+		},
+		resolveExecution: ({ tool, action, signal, parentWorld }) => resolveExecutionRoute(tool, signal, action, parentWorld?.checkpoint),
+		captureAuthoritativeResult: async ({ startInput, consumeInput, tool: toolName, concrete, action, callID, signal }) => {
+			const tool = consumeInput.tools.find(tool => tool.name === toolName);
+			if (!tool) return undefined;
+			const invocation = (await (consumeInput as BoundActorCall)[ACTOR_OPERATION]?.())?.invocation ?? action?.executionContext as ToolInvocation | undefined;
+			const definition = invocation?.semantics ?? actionSemantics.definition(action ?? toolName);
+			const captured = await executionGateway.captureAuthoritativeResult(
+				{ tool: toolName, callID, action, executionContext: invocation, effect: definition?.effect ?? "unbounded", requirements: definition?.requirements ?? UNRESTRICTED_PROCESS_EFFECTS },
+				{ cwd: options.cwd, signal },
+				{
+					cwd: options.cwd, tool, toolName, args: concrete, action, executionContext: invocation, callID, signal,
+					executionScope: { sessionID: startInput.sessionID, turnID: startInput.turnID },
+				},
+			);
+			return captured && { route: captured.route, computationDependencies: captured.computationDependencies, ...captured.capture };
+		},
+		actual: (input) => ({ id: input.id, tool: input.tool, input: input.args }),
+		preflightCandidate: ({ data, tool: toolName, concrete, action, route, signal }) => {
+			const permission = (action.executionContext as ToolInvocation | undefined)?.operation?.permission ?? action;
+			return checkPermission(data.tools.get(toolName), { toolName, args: permission === action ? concrete : permission.input, action: permission, route, signal });
+		},
+		authorizeCandidate: ({ stateData, tool: toolName, concrete, action, route, signal }) =>
+			checkPermission(stateData.tools.get(toolName), { toolName, args: concrete, action, route, signal: signal ?? new AbortController().signal }, true),
+		executeCandidate: async ({ startInput, data, tool: toolName, concrete, route, parentWorld, candidate: _candidate, index: _index, ...context }) => {
+			const { action, callID, signal } = context;
+			const tool = data.tools.get(toolName);
+			if (!tool) throw new Error(`Tool ${toolName} not found`);
+			const args = structuredClone(concrete), executionScope = { sessionID: startInput.sessionID, turnID: startInput.turnID, callID };
+			return executionGateway.executeSpeculative(
+				{ tool: toolName, callID, input: args, signal, action, scope: executionScope },
+				route,
+				{
+					...context, cwd: options.cwd, tool, toolName, args, executionScope,
+					...(parentWorld?.checkpoint ? { parentCheckpoint: parentWorld.checkpoint } : {}),
+				},
+			);
+		},
+		observationKey: toolObservationKey,
+		rejectCandidateOutput: ({ output }) => (output.isError && output.exitCode === undefined ? "tool_error_result" : undefined),
+		projectionRules,
+		onEvent: options.onEvent,
+	});
+	const disconnect = [
+		patternPlans.connect(runtime), drafterPlans.connect(runtime), executionPreparation.connect(runtime),
+	];
+
+	return {
+		sessionID,
+		runtime,
+		executionWorldDiagnostics: (refresh = false) =>
+			executionGateway.diagnostics({ cwd: options.cwd, ...(refresh ? { refresh: true } : {}) }),
+		startTurn: (input, signal) => runtime.startTurn({ ...input, sessionID }, signal),
+		previewActorTool: (input, signal) => runtime.previewActorTool({ ...input, sessionID }, signal),
+		previewActorCall: (input, signal) => runtime.previewActorCall({ ...input, sessionID, [RAW_ACTOR_CALL]: true } as BoundActorCall, signal),
+		execute: (input, signal, executor) => runtime.trackActorTool(sessionID, async issuedAt => {
+			const scope = input.turnID ? { sessionID, turnID: input.turnID, ...(input.id !== undefined ? { callID: input.id } : {}) } : undefined;
+			const operation: AgentToolOperation = {
+				tool: input.tool,
+				scope,
+				input: immutableSnapshot(input.args),
+				...(input.id ? { callID: input.id } : {}),
+				...(signal ? { signal } : {}),
+			};
+			let binding: Promise<AgentToolOperation> | undefined;
+			// One invocation owns its binding; prepare after Actor arrival so timing includes binding cost.
+			const bind = () => binding ??= (async () => {
+				const tool = input.tools.find((tool) => tool.name === input.tool);
+				return Object.freeze({ ...operation, ...await resolveBinding(operation.tool, operation.input,
+					tool ? stableValueHash(tool.parameters ?? null) : undefined, tool) });
+			})();
+			const actorCall = input.turnID ? { ...input, sessionID, turnID: input.turnID, args: operation.input, [ACTOR_OPERATION]: bind } : undefined;
+			let prepared: PreparedActorCall<ToolSettlement> | undefined;
+			let operations: ExecutionOperationBinding[] | undefined;
+			const computations: TimelineDependency[] = [];
+			return executionGateway.executeAuthoritative(operation, async () => {
+				const bound = await bind();
+				const execute = (inputs?: (path?: string) => Iterable<object>) => scope ? executionGateway.observeOperations(bound.action, scope,
+					() => executor(bound), (bindings, dependencies) => {
+						if (bindings.length) (operations ??= []).push(...bindings);
+						if (dependencies) computations.push(...dependencies);
+					}, prepared?.observeOperations, inputs, { cwd: options.cwd, signal, reuseEnabled: prepared?.reuseEnabled }) : executor(bound);
+				try { return await (prepared?.withInputs ? prepared.withInputs(execute) : execute()); }
+				finally {
+					if ((bound.invocation?.semantics ?? actionSemantics.definition(bound.action ?? bound.tool))?.effect !== "observation") {
+						await TimelineInterval.outside(() => Promise.allSettled(executionWorlds.filter(inClosure).map(async world => world.actorFallbackSettled?.())));
+					}
+				}
+			}, {
+				computationDependencies: () => computations,
+				...(actorCall
+					? {
+							reuse: async () => {
+								prepared = await runtime.prepareActorCall(actorCall, signal, issuedAt);
+								const output = prepared?.output;
+								if (output?.isError) throw ToolExecutionGateway.reusedFailure(output.result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n"));
+								return output?.result;
+							},
+							settled: async (settlement) => {
+								if (!prepared) return;
+								// The Actor's own failed command carries its exit code, as a speculative one does.
+								const output = settlement.status === "succeeded"
+									? { result: settlement.output, isError: false } : piToolErrorSettlement(input.tool, settlement.error);
+								await prepared.settle(settlement.toolExecution, output, operations);
+							},
+						}
+					: {}),
+			});
+		}),
+		drafterBudgetSnapshot: drafterPlans.snapshot,
+		finishTurn: async (turnID, terminal = false) => {
+			try {
+				await runtime.finishTurn({ sessionID, turnID, tool: "", args: {}, tools: [], terminal });
+			} finally {
+				const closed = await Promise.allSettled(executionWorlds.filter(inClosure).map(async world => world.finishTurn?.(turnID)));
+				const failures = closed.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+				if (failures.length) throw new AggregateError(failures, "Execution world turn cleanup failed");
+			}
+		},
+		dispose: async () => {
+			try {
+				await runtime.disposeSession(sessionID);
+			} finally {
+				for (const unsubscribe of disconnect) unsubscribe();
+				try { await patternPlans.dispose(); } finally { try { await executionPreparation.dispose(); } finally { await executionGateway.dispose(); } }
+			}
+		},
+	};
+}
+
+/** Raw predictions and previews cross Pi's preparation boundary once, before identity is sealed. */
+function prepareToolArguments(tool: AgentTool, input: unknown): unknown | undefined {
+	try {
+		const owned = structuredClone(input);
+		const prepared = tool.prepareArguments ? tool.prepareArguments(owned) : owned;
+		return immutableSnapshot(validateToolArguments(tool, {
+			type: "toolCall",
+			id: "spec_key",
+			name: tool.name,
+			arguments: prepared as Record<string, unknown>,
+		}));
+	} catch {
+		return undefined;
+	}
+}

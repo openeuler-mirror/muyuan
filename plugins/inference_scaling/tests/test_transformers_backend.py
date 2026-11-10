@@ -1,0 +1,282 @@
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
+from inference_scaling.arllm.backends.transformers_backend import TransformersBackend
+from inference_scaling.arllm.config import SamplingConfig, TokenPenalty
+from inference_scaling.arllm.types import Draft, GenerationRequest, LogWeightStop, ScoreRequest, TokenStatistic
+from inference_scaling.shared.rng import uniform_stream
+
+
+class TinyTokenizer:
+    pad_token_id = 0
+    bos_token_id = 0
+    eos_token_id = 2
+
+
+class ConstantLogitModel(torch.nn.Module):
+    def __init__(self, probabilities):
+        super().__init__()
+        self.constant_logits = torch.nn.Parameter(torch.log(torch.tensor(probabilities)), requires_grad=False)
+        self.config = SimpleNamespace(_name_or_path="constant-logit-model", model_type="qwen2")
+        self.forward_calls = 0
+        self.logits_to_keep_calls = []
+        self.batch_sizes = []
+
+    @property
+    def device(self):
+        return self.constant_logits.device
+
+    def forward(self, input_ids, logits_to_keep=0, **_kwargs):
+        self.forward_calls += 1
+        batch, length = input_ids.shape
+        self.batch_sizes.append(batch)
+        logits = self.constant_logits.expand(batch, length, -1).clone()
+        logits_to_keep = int(logits_to_keep)
+        self.logits_to_keep_calls.append(logits_to_keep)
+        if logits_to_keep:
+            logits = logits[:, -logits_to_keep:, :]
+        return SimpleNamespace(logits=logits, past_key_values=SimpleNamespace(batch_select_indices=lambda _rows: None))
+
+
+def _backend(model, token_penalty=None):
+    return TransformersBackend(model, TinyTokenizer(), device="cpu", max_score_batch_size=8, score_chunk_size=256,
+                               token_penalty=token_penalty)
+
+
+def test_request_local_randomness_is_independent_of_batch_order() -> None:
+    model = ConstantLogitModel([0.55, 0.3, 0.15])
+    backend = _backend(model)
+    requests = [GenerationRequest((0,), 5, SamplingConfig(), seed, f"request-{seed}") for seed in (3, 9, 27)]
+    by_id = {sample.request_id: sample for sample in backend.sample_batch(list(reversed(requests)))}
+    assert all(sample == by_id[sample.request_id] for sample in backend.sample_batch(requests))
+
+
+def test_inverse_cdf_accumulates_large_vocabulary_in_float64() -> None:
+    seed, model = 12434, ConstantLogitModel([1 / 1000] * 1000)
+    sample = _backend(model).sample_batch([GenerationRequest((0,), 1, SamplingConfig(), seed, "large-vocabulary")])[0]
+    probabilities = torch.log_softmax(model.constant_logits, dim=-1).exp().double().numpy()
+    uniform = np.random.default_rng(seed).random()
+    expected = int((np.cumsum(probabilities, dtype=np.float64) < uniform).sum())
+
+    # This seed lies on a boundary where a float32 CDF returns token 668.
+    assert sample.token_ids == (expected,) == (669,)
+
+
+def test_sampled_logprobabilities_match_exact_rescoring() -> None:
+    model = ConstantLogitModel([0.5, 0.35, 0.15])
+    backend = _backend(model)
+    sampling = SamplingConfig(temperature=0.7, top_k=2)
+    samples = backend.sample_batch([GenerationRequest((0,), 4, sampling, 100 + index, f"sample-{index}")
+                                    for index in range(4)])
+    scores = backend.score_batch([ScoreRequest(sample.prefix, (sample.token_ids,), policy)
+                                  for policy in (sampling, SamplingConfig()) for sample in samples])
+    for sample, token_scores, reference_scores in zip(samples, scores[: len(samples)], scores[len(samples) :], strict=True):
+        assert sample.token_logprobs == pytest.approx(token_scores)
+        assert sample.reference_token_logprobs == pytest.approx(reference_scores)
+        assert sample.reference_policy_id == SamplingConfig().policy_id
+    assert model.forward_calls == 5
+
+
+def test_top_p_scoring_uses_the_actual_truncated_policy() -> None:
+    model = ConstantLogitModel([0.6, 0.3, 0.1])
+    backend = _backend(model)
+    scores = backend.score_batch([ScoreRequest((0,), ((0,), (1,), (2,)), SamplingConfig(top_p=0.7))])
+    assert scores[0][0] == pytest.approx(np.log(2 / 3))
+    assert scores[1][0] == pytest.approx(np.log(1 / 3))
+    assert scores[2][0] == float("-inf")
+
+
+def test_eos_stops_generation_and_statistics_count_real_tokens() -> None:
+    model = ConstantLogitModel([0.0, 0.0, 1.0])
+    backend = _backend(model)
+    samples = backend.sample_batch([GenerationRequest((0,), 8, SamplingConfig(eos_token_id=2), 4, "eos")])
+    snapshot = backend.snapshot()
+    assert (samples[0].token_ids, samples[0].finish_reason) == ((2,), "eos")
+    assert (snapshot.generated_tokens, snapshot.prefill_tokens, snapshot.generation_forward_token_slots,
+            snapshot.estimated_dense_forward_flops) == (1, 1, 1, 6)
+
+
+def test_identical_prefix_prefill_is_computed_once_then_forked() -> None:
+    model = ConstantLogitModel([0.5, 0.3, 0.2])
+    backend = _backend(model)
+    backend.sample_batch([GenerationRequest((0, 1, 0), 1, SamplingConfig(), index, str(index)) for index in range(5)])
+    snapshot = backend.snapshot()
+    assert model.forward_calls == 1
+    assert (snapshot.prefill_tokens, snapshot.shared_prefill_tokens_saved, snapshot.generation_forward_token_slots,
+            snapshot.estimated_dense_forward_flops) == (3, 12, 3, 18)
+
+
+def test_each_repeated_prefix_is_prefilled_once_then_forked() -> None:
+    model = ConstantLogitModel([0.5, 0.3, 0.2])
+    backend = _backend(model)
+    # Prefixes may repeat unequally often.
+    prefixes = ((0, 1), (1, 0), (0, 1), (1, 0), (0, 1))
+    outputs = backend.sample_batch([GenerationRequest(prefix, 1, SamplingConfig(), index, str(index))
+                                    for index, prefix in enumerate(prefixes)])
+    assert [sample.request_id for sample in outputs] == [str(i) for i in range(5)]
+    snapshot = backend.snapshot()
+    assert model.batch_sizes == [2]
+    assert (snapshot.prefill_tokens, snapshot.shared_prefill_tokens_saved, snapshot.generation_forward_token_slots,
+            snapshot.estimated_dense_forward_flops) == (4, 6, 4, 24)
+
+
+def test_finished_rows_leave_the_batch() -> None:
+    model = ConstantLogitModel([0.3, 0.3, 0.4])
+    backend = _backend(model)
+    samples = backend.sample_batch([GenerationRequest((0,), 8, SamplingConfig(eos_token_id=2), seed, str(seed))
+                                    for seed in range(6)])
+    lengths = [len(sample.token_ids) for sample in samples]
+    # After the shared prefill, each decode step runs only the rows still generating.
+    assert model.batch_sizes == [1] + [sum(length > step for length in lengths) for step in range(1, max(lengths))]
+    assert model.batch_sizes[-1] < len(samples)
+    assert backend.snapshot().generation_forward_token_slots == sum(model.batch_sizes)
+
+
+def test_stop_sequences_end_generation_and_reference_uses_its_temperature() -> None:
+    model = ConstantLogitModel([0.2, 0.7, 0.1])
+    backend = _backend(model)
+    request = GenerationRequest((0,), 12, SamplingConfig(temperature=0.5), 3, "stop", stop_sequences=((1, 1),),
+                                reference_temperature=2.0)
+    sample = backend.sample_batch([request])[0]
+    pairs = list(zip(sample.token_ids, sample.token_ids[1:]))
+    assert sample.finish_reason == "stop" and pairs.index((1, 1)) == len(pairs) - 1
+    reference = backend.score_batch([ScoreRequest((0,), (sample.token_ids,), request.reference_policy)])[0]
+    assert sample.reference_token_logprobs == pytest.approx(reference)
+    assert sample.reference_policy_id == request.reference_policy.policy_id
+
+
+def test_scoring_counts_padded_forward_slots_and_dense_flops() -> None:
+    model = ConstantLogitModel([0.6, 0.3, 0.1])
+    backend = _backend(model)
+    backend.score_batch([ScoreRequest((0,), ((0,), (1,), (0, 1)), SamplingConfig())])
+    snapshot = backend.snapshot()
+    # The inputs are the prefix and every target but the last: (0,), (0,) and (0, 0).
+    assert (snapshot.scored_tokens, snapshot.score_forward_token_slots, snapshot.estimated_dense_forward_flops) == (4, 6, 36)
+    assert model.logits_to_keep_calls == [2]
+
+
+def test_scoring_keeps_only_required_tail_logits() -> None:
+    model = ConstantLogitModel([0.6, 0.3, 0.1])
+    backend = _backend(model)
+    scores = backend.score_batch([ScoreRequest((0, 1, 0, 1), ((0,), (1,), (0, 1)), SamplingConfig())])
+    assert [len(score) for score in scores] == [1, 1, 2]
+    assert model.logits_to_keep_calls == [2]
+
+
+def test_confidence_statistics_match_reference_policy_definitions() -> None:
+    backend = _backend(ConstantLogitModel([0.5, 0.3, 0.2]))
+    result = backend.token_statistics([ScoreRequest((0,), ((0, 1),))], TokenStatistic(SamplingConfig(), 2))[0]
+    assert result == pytest.approx([-np.mean(np.log([0.5, 0.3]))] * 2)
+    snapshot = backend.snapshot()
+    assert (snapshot.scored_tokens, snapshot.score_forward_token_slots) == (2, 2)
+    # Self-Certainty's KL divergence from the uniform distribution over the three tokens.
+    assert backend.token_statistics([ScoreRequest((0,), ((0, 1),))], TokenStatistic(SamplingConfig()))[0] == pytest.approx(
+        [-np.mean(np.log([0.5, 0.3, 0.2])) - np.log(3)] * 2)
+    with pytest.raises(ValueError, match="full-support"):
+        TokenStatistic(SamplingConfig(top_k=2), 2)
+    with pytest.raises(ValueError, match="top_k must be positive"):
+        TokenStatistic(SamplingConfig(), 0)
+
+
+def test_generation_reports_the_statistics_that_scoring_computes() -> None:
+    backend = _backend(ConstantLogitModel([0.5, 0.35, 0.15]))
+    # Another policy's top-K confidences, and the sampling policy's own divergence from uniform.
+    for sampling, statistic in ((SamplingConfig(temperature=0.7, top_k=2), TokenStatistic(SamplingConfig(), 2)),
+                                (SamplingConfig(eos_token_id=2), TokenStatistic(SamplingConfig()))):
+        samples = backend.sample_batch([GenerationRequest((0,), 4, sampling, seed, str(seed), statistic=statistic)
+                                        for seed in range(3)])
+        scores = backend.token_statistics([ScoreRequest(sample.prefix, (sample.token_ids,)) for sample in samples],
+                                          statistic)
+        for sample, score in zip(samples, scores, strict=True):
+            assert sample.token_statistics == pytest.approx(score)
+
+
+def test_token_penalty_is_the_model_for_sampling_scoring_and_identity() -> None:
+    penalty = TokenPenalty((1,), float(np.log(2)))
+    backend = _backend(ConstantLogitModel([0.5, 0.3, 0.2]), penalty)
+    assert backend.model_id == f"constant-logit-model|{penalty.penalty_id}"
+    # (0.5, 0.3, 0.2) becomes (0.5, 0.15, 0.2) / 0.85, and a temperature acts on the penalized logits.
+    scores = backend.score_batch([ScoreRequest((0,), ((0,), (1,), (2,)), SamplingConfig()),
+                                  ScoreRequest((0,), ((1,),), SamplingConfig(temperature=0.5))])
+    assert [row[0] for row in scores] == pytest.approx(np.log([0.5 / 0.85, 0.15 / 0.85, 0.2 / 0.85, 0.0225 / 0.3125]))
+    sampling = SamplingConfig(temperature=0.5)
+    samples = backend.sample_batch([GenerationRequest((0,), 4, sampling, seed, str(seed)) for seed in range(4)])
+    for policy, field in ((sampling, "token_logprobs"), (SamplingConfig(), "reference_token_logprobs")):
+        rescored = backend.score_batch([ScoreRequest(sample.prefix, (sample.token_ids,), policy) for sample in samples])
+        assert [getattr(sample, field) for sample in samples] == pytest.approx(rescored)
+
+
+def test_token_penalty_steers_native_greedy_and_beam_generation() -> None:
+    from transformers import AutoModelForCausalLM, GPT2Config
+
+    with torch.random.fork_rng():
+        torch.manual_seed(3)
+        model = AutoModelForCausalLM.from_config(GPT2Config(vocab_size=16, n_layer=1, n_head=1, n_embd=8, n_positions=32))
+    tokenizer = SimpleNamespace(pad_token_id=0, eos_token_id=2, bos_token_id=1)
+    plain = TransformersBackend(model, tokenizer, device="cpu", max_score_batch_size=8, score_chunk_size=8)
+    for beams in (1, 3):
+        chosen = tuple(sorted(set(plain.direct_generate((1, 4), max_new_tokens=4, num_beams=beams)) - {2}))
+        penalized = TransformersBackend(model, tokenizer, device="cpu", max_score_batch_size=8, score_chunk_size=8,
+                                        token_penalty=TokenPenalty(chosen, 30.0))
+        assert not set(penalized.direct_generate((1, 4), max_new_tokens=4, num_beams=beams)) & set(chosen)
+        # The native beam state is retained while forced tokens have logprob 0.
+        forced = plain.direct_generate((1, 4), max_new_tokens=3, num_beams=beams,
+                                       token_constraint=lambda tokens: 5 if len(tokens) < 4 else 2)
+        assert forced == (5, 5, 2)
+
+
+def test_token_penalty_words_take_their_single_token_forms() -> None:
+    class Tokenizer:
+        pieces = {" wait": 5, " Wait": 6, "Wait": 7, " hmm": 8}
+
+        def encode(self, text, add_special_tokens):
+            # "Hmm" is an unknown word and the rest take two pieces.
+            return [self.pieces[text]] if text in self.pieces else [0] if text == "Hmm" else [3, 4]
+
+        def decode(self, ids):
+            return {value: key for key, value in self.pieces.items()}.get(ids[0], "[UNK]")
+
+    assert TokenPenalty.from_words(Tokenizer(), ["wait", "hmm"], 2) == TokenPenalty((5, 6, 7, 8), 2.0)
+    with pytest.raises(ValueError, match="single token"):
+        TokenPenalty.from_words(Tokenizer(), ["perhaps"], 1.0)
+
+
+def test_a_split_request_continues_the_uniform_stream_and_reports_its_cdf_bounds() -> None:
+    backend = _backend(ConstantLogitModel([0.5, 0.3, 0.2]))
+    whole = backend.sample_batch([GenerationRequest((0,), 6, SamplingConfig(), 7, "whole")])[0]
+    head = backend.sample_batch([GenerationRequest((0,), 2, SamplingConfig(), 7, "head")])[0]
+    tail = backend.sample_batch([GenerationRequest((0,) + head.token_ids, 4, SamplingConfig(), 7, "tail",
+                                                   uniform_offset=2)])[0]
+    assert head.token_ids + tail.token_ids == whole.token_ids
+    assert all(below < uniform <= through
+               for (below, through), uniform in zip(whole.token_cdf_bounds, uniform_stream(7, 0, 6), strict=True))
+
+
+def test_draft_replay_keeps_the_output_and_generates_only_after_the_first_miss() -> None:
+    backend = _backend(ConstantLogitModel([0.6, 0.3, 0.1]))
+    old = backend.sample_batch([GenerationRequest((0,), 6, SamplingConfig(), 3, "old")])[0]
+    draft = Draft(old.token_ids, old.token_logprobs, old.reference_token_logprobs, old.token_cdf_bounds)
+    plain = [backend.sample_batch([GenerationRequest((0,), 6, SamplingConfig(), seed, "new")])[0] for seed in (3, 8)]
+    before = backend.snapshot()
+    replayed = backend.sample_batch([GenerationRequest((0,), 6, SamplingConfig(), seed, "new", draft=draft)
+                                     for seed in (3, 8)])
+    assert replayed == plain
+    shared = next(index for index, (left, right) in enumerate(zip(old.token_ids, plain[1].token_ids)) if left != right)
+    after = backend.snapshot()
+    # The identical request is replayed whole; the other one is generated from its first miss.
+    assert after.replayed_tokens - before.replayed_tokens == 6 + shared
+    assert after.generated_tokens - before.generated_tokens == 6 - shared
+
+
+def test_log_weight_stop_rejects_rows_at_the_first_crossing_and_leaves_others() -> None:
+    backend = _backend(ConstantLogitModel([0.6, 0.3, 0.1]))
+    # At temperature 1/2 every token adds log(sum p^2) = log(0.46) to a weight with scale 2.
+    step = float(np.log(0.46))
+    stop = LogWeightStop(2.0, 0.0, 3.5 * step)
+    samples = backend.sample_batch([GenerationRequest((0,), 6, SamplingConfig(temperature=0.5), seed, str(seed),
+                                                      log_weight_stop=stop if seed else None) for seed in range(3)])
+    assert [(len(sample.token_ids), sample.finish_reason) for sample in samples] == [(6, "length")] + [(4, "rejected")] * 2
+    assert stop.weight(samples[1].reference_token_logprobs, samples[1].token_logprobs) == pytest.approx(4 * step)
