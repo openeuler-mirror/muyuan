@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meta-tool-online"
-version = "1.0.0"
-description = "Core contracts and validated deterministic runtime for BATE meta-tools"
+version = "2.0.0"
+description = "Contracts, normalization, state graphs and validated runtime for BATE meta-tools"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
@@ -15,9 +15,17 @@ dependencies = ["jsonschema>=4.20,<5", "referencing>=0.30,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+codex = ["mcp>=1.29,<2"]
+
+[project.scripts]
+bate = "bate.cli:main"
+bate-codex = "bate.codex.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"bate.codex" = ["skills/meta-tool/SKILL.md", "skills/meta-tool/agents/openai.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

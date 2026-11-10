@@ -1,0 +1,10 @@
+{
+  "normalization": {
+    "argument_matching": "structural",
+    "default_semantic_type": "accessor",
+    "domain_commutativity": false
+  },
+  "extraction": {
+    "threshold": 3
+  }
+}

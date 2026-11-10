@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from awo.runtime import MetaToolExecutionError, MetaToolExecutor
-from awo.spec import MetaToolSpec, StepSpec, input_binding, step_binding
+from bate.runtime import MetaToolExecutionError, MetaToolExecutor
+from bate.spec import MetaToolSpec, StepSpec, input_binding, step_binding
 
 
 def _spec() -> MetaToolSpec:

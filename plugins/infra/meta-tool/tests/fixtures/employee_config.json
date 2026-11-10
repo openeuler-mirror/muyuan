@@ -1,0 +1,29 @@
+{
+  "domain_commutativity": false,
+  "infer_domain_from_name": true,
+  "default_semantic_type": "mutator",
+  "tool_rules": [
+    {
+      "pattern": "^directory\\.search_employee$",
+      "semantic_type": "accessor",
+      "placeholder_arguments": {
+        "name": "{EMPLOYEE_NAME}"
+      }
+    },
+    {
+      "pattern": "^documents\\.get_document$",
+      "semantic_type": "accessor",
+      "placeholder_arguments": {
+        "employee_id": "{EMPLOYEE_ID}"
+      }
+    },
+    {
+      "pattern": "^mail\\.send_email$",
+      "semantic_type": "mutator",
+      "placeholder_arguments": {
+        "subject": "{SUBJECT}",
+        "attachment_id": "{DOCUMENT_ID}"
+      }
+    }
+  ]
+}

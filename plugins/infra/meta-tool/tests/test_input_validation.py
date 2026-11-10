@@ -5,8 +5,8 @@ from types import MappingProxyType
 
 import pytest
 
-from awo.runtime import MetaToolExecutor, MetaToolValidationError
-from awo.spec import MetaToolSpec, StepSpec, input_binding, step_binding
+from bate.runtime import MetaToolExecutor, MetaToolValidationError
+from bate.spec import MetaToolSpec, StepSpec, input_binding, step_binding
 
 
 def spec_for(value_schema, **root):
@@ -188,7 +188,7 @@ def test_error_does_not_echo_argument_value():
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_missing_validation_dependency_blocks_all_primitives(monkeypatch, asynchronous):
     import builtins
-    from awo.validation import _validator
+    from bate.validation import _validator
 
     original = builtins.__import__
 

@@ -1,0 +1,33 @@
+{
+  "mode": "online",
+  "catalog": null,
+  "batch_enabled": true,
+  "approved_meta_tools": {},
+  "servers": {
+    "inventory": {
+      "command": "/absolute/path/to/python",
+      "args": ["/absolute/path/to/inventory_mcp.py"],
+      "cwd": ".",
+      "env_vars": []
+    }
+  },
+  "bindings": {
+    "mcp__inventory__lookup_customer": {
+      "server": "inventory", "tool": "lookup_customer", "read_only": true
+    },
+    "mcp__inventory__lookup_order": {
+      "server": "inventory", "tool": "lookup_order", "read_only": true
+    }
+  },
+  "online": {
+    "trace_files": ["/absolute/path/to/rollout-session-a.jsonl", "/absolute/path/to/rollout-session-b.jsonl"],
+    "state_dir": "./bate-online-state",
+    "auto_admit_read_only": true,
+    "poll_seconds": 2,
+    "min_support": 3,
+    "min_sessions": 2,
+    "max_len": 8,
+    "max_meta_tools": 50,
+    "extraction_timeout_seconds": 120
+  }
+}

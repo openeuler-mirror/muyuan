@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Goal Plus native workers invoke `pi` by name and intentionally disable
+# automatic extension discovery. Keep the Goal Plus command unchanged while
+# adding only the Meta-tool extension configured by the parent Pi process.
+wrapper_path="$(readlink -f "$0")"
+wrapper_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+real_pi="${META_TOOL_PI_REAL_BIN:-}"
+
+if [[ -z "${real_pi}" ]]; then
+    IFS=':' read -r -a path_entries <<< "${PATH:-}"
+    for path_entry in "${path_entries[@]}"; do
+        [[ -n "${path_entry}" ]] || path_entry="."
+        [[ "${path_entry}" == "${wrapper_dir}" ]] && continue
+        candidate="${path_entry}/pi"
+        [[ -x "${candidate}" ]] || continue
+        [[ "$(readlink -f "${candidate}")" == "${wrapper_path}" ]] && continue
+        real_pi="${candidate}"
+        break
+    done
+fi
+
+if [[ -z "${real_pi}" ]]; then
+    printf 'META_TOOL pi wrapper: could not locate the real pi executable\n' >&2
+    exit 127
+fi
+
+args=("$@")
+extra_extensions="${META_TOOL_PI_EXTRA_EXTENSIONS:-}"
+
+if [[ -n "${extra_extensions}" ]]; then
+    IFS=':' read -r -a extension_paths <<< "${extra_extensions}"
+    for extension in "${extension_paths[@]}"; do
+        [[ -n "${extension}" ]] || continue
+        [[ -f "${extension}" ]] || {
+            printf 'META_TOOL pi wrapper: missing extension %s\n' "${extension}" >&2
+            exit 70
+        }
+        already_present=0
+        for arg in "${args[@]}"; do
+            if [[ "${arg}" == "${extension}" ]]; then
+                already_present=1
+                break
+            fi
+        done
+        if (( ! already_present )); then
+            args+=(--extension "${extension}")
+        fi
+    done
+fi
+
+exec "${real_pi}" "${args[@]}"

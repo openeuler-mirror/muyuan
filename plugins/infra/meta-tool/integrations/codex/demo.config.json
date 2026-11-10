@@ -1,0 +1,17 @@
+{
+  "catalog": "/tmp/bate-codex-demo/active_meta_tools.json",
+  "timeout_seconds": 30,
+  "approved_meta_tools": {
+    "mt_8a83a25f42dc": "8a83a25f42dc15a530a0efe6cc378c9e4d542fc4055c066be98959b8f3e6aca3",
+    "mt_147caf491118": "147caf491118b04d1b7733a605b118db69a4bf521ae0e982cb20ba9d49091e8d"
+  },
+  "servers": {
+    "demo": {"command": "python3", "args": ["demo_server.py"], "cwd": "."}
+  },
+  "bindings": {
+    "lookup_customer": {"server": "demo", "tool": "lookup_customer", "read_only": true},
+    "lookup_order": {"server": "demo", "tool": "lookup_order", "read_only": true},
+    "lookup_invoice": {"server": "demo", "tool": "lookup_invoice", "read_only": true},
+    "read_record": {"server": "demo", "tool": "read_record", "read_only": true}
+  }
+}

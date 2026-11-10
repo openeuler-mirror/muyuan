@@ -1,0 +1,541 @@
+{
+  "meta_tools": [
+    {
+      "name": "meta_tool_read_batch_2",
+      "description": "Read 2 caller-planned code ranges, returning every result. All ranges must be known before execution; no semantic planning inside.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path_1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_1": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_1": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_2": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_2": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "required": [
+          "path_1",
+          "offset_1",
+          "limit_1",
+          "path_2",
+          "offset_2",
+          "limit_2"
+        ],
+        "additionalProperties": false
+      },
+      "steps": [
+        {
+          "id": "read_1",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_1"
+            },
+            "offset": {
+              "$input": "offset_1"
+            },
+            "limit": {
+              "$input": "limit_1"
+            }
+          }
+        },
+        {
+          "id": "read_2",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_2"
+            },
+            "offset": {
+              "$input": "offset_2"
+            },
+            "limit": {
+              "$input": "limit_2"
+            }
+          }
+        }
+      ],
+      "output": [
+        {
+          "path": {
+            "$input": "path_1"
+          },
+          "offset": {
+            "$input": "offset_1"
+          },
+          "limit": {
+            "$input": "limit_1"
+          },
+          "result": {
+            "$step": "read_1",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_2"
+          },
+          "offset": {
+            "$input": "offset_2"
+          },
+          "limit": {
+            "$input": "limit_2"
+          },
+          "result": {
+            "$step": "read_2",
+            "path": []
+          }
+        }
+      ],
+      "metadata": {
+        "composition_kind": "caller_bound_read_batch_v1",
+        "support": 8,
+        "distinct_sessions": 8,
+        "occurrences": 156,
+        "requires_caller_plan": true,
+        "side_effect_free": true,
+        "execution_guard": "none",
+        "reviewed": true,
+        "human_reviewed": false,
+        "requires_domain_review": false,
+        "admission_policy": "bounded-caller-read-profile-v1",
+        "internal_data_flows": 0,
+        "varying_data_flows": 0,
+        "sequence_purity": 1,
+        "min_branch_dominance": 1,
+        "llm_turn_coverage": 1,
+        "mean_llm_calls_saved_per_observed_occurrence": 1,
+        "savings_semantics": "conditional upper bound for already planned ranges, not measured online savings",
+        "intent": "read source code ranges inspect files",
+        "project_tags": []
+      }
+    },
+    {
+      "name": "meta_tool_read_batch_3",
+      "description": "Read 3 caller-planned code ranges, returning every result. All ranges must be known before execution; no semantic planning inside.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path_1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_1": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_1": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_2": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_2": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_3": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_3": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "required": [
+          "path_1",
+          "offset_1",
+          "limit_1",
+          "path_2",
+          "offset_2",
+          "limit_2",
+          "path_3",
+          "offset_3",
+          "limit_3"
+        ],
+        "additionalProperties": false
+      },
+      "steps": [
+        {
+          "id": "read_1",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_1"
+            },
+            "offset": {
+              "$input": "offset_1"
+            },
+            "limit": {
+              "$input": "limit_1"
+            }
+          }
+        },
+        {
+          "id": "read_2",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_2"
+            },
+            "offset": {
+              "$input": "offset_2"
+            },
+            "limit": {
+              "$input": "limit_2"
+            }
+          }
+        },
+        {
+          "id": "read_3",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_3"
+            },
+            "offset": {
+              "$input": "offset_3"
+            },
+            "limit": {
+              "$input": "limit_3"
+            }
+          }
+        }
+      ],
+      "output": [
+        {
+          "path": {
+            "$input": "path_1"
+          },
+          "offset": {
+            "$input": "offset_1"
+          },
+          "limit": {
+            "$input": "limit_1"
+          },
+          "result": {
+            "$step": "read_1",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_2"
+          },
+          "offset": {
+            "$input": "offset_2"
+          },
+          "limit": {
+            "$input": "limit_2"
+          },
+          "result": {
+            "$step": "read_2",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_3"
+          },
+          "offset": {
+            "$input": "offset_3"
+          },
+          "limit": {
+            "$input": "limit_3"
+          },
+          "result": {
+            "$step": "read_3",
+            "path": []
+          }
+        }
+      ],
+      "metadata": {
+        "composition_kind": "caller_bound_read_batch_v1",
+        "support": 8,
+        "distinct_sessions": 8,
+        "occurrences": 137,
+        "requires_caller_plan": true,
+        "side_effect_free": true,
+        "execution_guard": "none",
+        "reviewed": true,
+        "human_reviewed": false,
+        "requires_domain_review": false,
+        "admission_policy": "bounded-caller-read-profile-v1",
+        "internal_data_flows": 0,
+        "varying_data_flows": 0,
+        "sequence_purity": 1,
+        "min_branch_dominance": 1,
+        "llm_turn_coverage": 1,
+        "mean_llm_calls_saved_per_observed_occurrence": 1.5401459854014599,
+        "savings_semantics": "conditional upper bound for already planned ranges, not measured online savings",
+        "intent": "read source code ranges inspect files",
+        "project_tags": []
+      }
+    },
+    {
+      "name": "meta_tool_read_batch_4",
+      "description": "Read 4 caller-planned code ranges, returning every result. All ranges must be known before execution; no semantic planning inside.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path_1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_1": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_1": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_2": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_2": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_3": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_3": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          },
+          "path_4": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "offset_4": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit_4": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "required": [
+          "path_1",
+          "offset_1",
+          "limit_1",
+          "path_2",
+          "offset_2",
+          "limit_2",
+          "path_3",
+          "offset_3",
+          "limit_3",
+          "path_4",
+          "offset_4",
+          "limit_4"
+        ],
+        "additionalProperties": false
+      },
+      "steps": [
+        {
+          "id": "read_1",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_1"
+            },
+            "offset": {
+              "$input": "offset_1"
+            },
+            "limit": {
+              "$input": "limit_1"
+            }
+          }
+        },
+        {
+          "id": "read_2",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_2"
+            },
+            "offset": {
+              "$input": "offset_2"
+            },
+            "limit": {
+              "$input": "limit_2"
+            }
+          }
+        },
+        {
+          "id": "read_3",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_3"
+            },
+            "offset": {
+              "$input": "offset_3"
+            },
+            "limit": {
+              "$input": "limit_3"
+            }
+          }
+        },
+        {
+          "id": "read_4",
+          "tool": "read",
+          "arguments": {
+            "path": {
+              "$input": "path_4"
+            },
+            "offset": {
+              "$input": "offset_4"
+            },
+            "limit": {
+              "$input": "limit_4"
+            }
+          }
+        }
+      ],
+      "output": [
+        {
+          "path": {
+            "$input": "path_1"
+          },
+          "offset": {
+            "$input": "offset_1"
+          },
+          "limit": {
+            "$input": "limit_1"
+          },
+          "result": {
+            "$step": "read_1",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_2"
+          },
+          "offset": {
+            "$input": "offset_2"
+          },
+          "limit": {
+            "$input": "limit_2"
+          },
+          "result": {
+            "$step": "read_2",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_3"
+          },
+          "offset": {
+            "$input": "offset_3"
+          },
+          "limit": {
+            "$input": "limit_3"
+          },
+          "result": {
+            "$step": "read_3",
+            "path": []
+          }
+        },
+        {
+          "path": {
+            "$input": "path_4"
+          },
+          "offset": {
+            "$input": "offset_4"
+          },
+          "limit": {
+            "$input": "limit_4"
+          },
+          "result": {
+            "$step": "read_4",
+            "path": []
+          }
+        }
+      ],
+      "metadata": {
+        "composition_kind": "caller_bound_read_batch_v1",
+        "support": 8,
+        "distinct_sessions": 8,
+        "occurrences": 87,
+        "requires_caller_plan": true,
+        "side_effect_free": true,
+        "execution_guard": "none",
+        "reviewed": true,
+        "human_reviewed": false,
+        "requires_domain_review": false,
+        "admission_policy": "bounded-caller-read-profile-v1",
+        "internal_data_flows": 0,
+        "varying_data_flows": 0,
+        "sequence_purity": 1,
+        "min_branch_dominance": 1,
+        "llm_turn_coverage": 1,
+        "mean_llm_calls_saved_per_observed_occurrence": 2.1724137931034484,
+        "savings_semantics": "conditional upper bound for already planned ranges, not measured online savings",
+        "intent": "read source code ranges inspect files",
+        "project_tags": []
+      }
+    }
+  ]
+}

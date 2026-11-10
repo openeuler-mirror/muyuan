@@ -1,14 +1,14 @@
-"""This first layer must not depend on unpublished algorithms or adapters."""
+"""The foundation must not depend on unpublished extraction or host layers."""
 from pathlib import Path
 import subprocess
 import sys
 import textwrap
 import tomllib
 
-from awo import MetaToolValidationError
-from awo.io import load_specs, load_traces, write_json, write_jsonl
-from awo.models import ToolCall, Trace
-from awo.spec import MetaToolSpec, StepSpec, input_binding, step_binding
+from bate import MetaToolValidationError
+from bate.io import load_specs, load_traces, write_json, write_jsonl
+from bate.models import ToolCall, Trace
+from bate.spec import MetaToolSpec, StepSpec, input_binding, step_binding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,15 +37,18 @@ def test_core_imports_without_future_layers_or_validation_dependencies(tmp_path)
         import sys
         class BlockFutureLayers(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, *args):
-                blocked = ('bate', 'jsonschema', 'referencing', 'awo.normalization',
-                           'awo.extraction', 'awo.pipeline', 'awo.dispatch')
+                blocked = ('awo', 'jsonschema', 'referencing', 'bate.extraction',
+                           'bate.pipeline', 'bate.dispatch', 'bate.dataflow', 'bate.compiler')
                 if any(fullname == x or fullname.startswith(x + '.') for x in blocked):
                     raise ModuleNotFoundError(fullname)
         sys.meta_path.insert(0, BlockFutureLayers())
         sys.path.insert(0, sys.argv[1])
-        import awo
-        import awo.io
-        assert issubclass(awo.MetaToolValidationError, ValueError)
+        import bate
+        import bate.io
+        assert issubclass(bate.MetaToolValidationError, ValueError)
+        assert bate.NormalizationConfig().argument_matching == 'exact'
+        assert bate.StateGraphBuilder(bate.TraceNormalizer()).build([]).graph.root_id == 'root'
+        assert bate.ToolRule and bate.RegexSubstitution
         assert 'jsonschema' not in sys.modules
         assert 'referencing' not in sys.modules
     """)
@@ -58,18 +61,20 @@ def test_core_imports_without_future_layers_or_validation_dependencies(tmp_path)
 
 def test_readme_example_executes():
     source = (ROOT / "README.md").read_text()
-    snippet = source.split("```python\n", 1)[1].split("```", 1)[0]
-    exec(compile(snippet, "README.md", "exec"), {})
+    snippets = [block.split("```", 1)[0] for block in source.split("```python\n")[1:]]
+    assert len(snippets) >= 2
+    for snippet in snippets:
+        exec(compile(snippet, "README.md", "exec"), {})
 
 
 def test_package_identity_and_entry_point(tmp_path):
-    import awo
+    import bate
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert config["version"] == awo.__version__
+    assert config["version"] == bate.__version__
     assert issubclass(MetaToolValidationError, ValueError)
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-c",
-         "import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_module('awo',run_name='__main__')",
+         "import sys,runpy;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('bate',run_name='__main__')",
          str(ROOT / "src")],
         cwd=tmp_path, capture_output=True, text=True, timeout=20,
     )
