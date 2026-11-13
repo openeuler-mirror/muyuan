@@ -1,0 +1,189 @@
+"""One run: choices + settings -> a resumable results directory.
+
+The directory is ``<output>/<dataset>/<model>/<algorithm>[-<reward>]/<fingerprint>``.
+The fingerprint hashes everything that determines the records: the choices,
+the settings they read, the model and dataset identities and the package
+source. Rerunning with the same fingerprint appends only missing
+(problem, draw) records; the draw count is not part of it, so draws can be
+extended later.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping
+
+from inference_scaling.app.records import (
+    environment,
+    git_state,
+    json_sha256,
+    load_jsonl,
+    source_sha256,
+    summarize,
+    summarize_executions,
+    write_json_atomic,
+)
+from inference_scaling.datasets import load_dataset
+from inference_scaling.app.settings import SettingsError, validate_settings
+from inference_scaling.datasets.base import Dataset, Problem
+from inference_scaling.shared.rng import SeedStream
+
+
+@dataclass(frozen=True)
+class Choices:
+    algorithm: str
+    model: str
+    reward: str | None
+    dataset: str
+
+    @property
+    def label(self) -> str:
+        return self.algorithm if self.reward is None else f"{self.algorithm}-{self.reward}"
+
+
+def _family(settings: Mapping[str, Any], choices: Choices, dataset: Dataset) -> Any:
+    # Keep the CLI and settings usable without loading model libraries.
+    from inference_scaling.app.ar import ARFamily
+
+    return ARFamily(settings, choices, dataset)
+
+
+def effective_settings(settings: Mapping[str, Any], choices: Choices) -> dict[str, Any]:
+    """The settings a run reads; the draw count and the hash cache location are excluded."""
+
+    family = settings[choices.model]
+    return {
+        "seed": settings["run"]["seed"],
+        "dataset": settings["datasets"][choices.dataset],
+        "reward": None if choices.reward is None else settings["rewards"][choices.reward],
+        "model": {key: value for key, value in family.items() if key != "algorithms"},
+        "algorithm": family["algorithms"][choices.algorithm],
+    }
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _solve(family: Any, dataset: Dataset, problem: Problem, draw: int, seed: int) -> dict[str, Any]:
+    family.synchronize()
+    started = time.perf_counter()
+    solution = family.solve(problem, SeedStream(SeedStream(seed).derive("draw", draw)))
+    family.synchronize()
+    elapsed = time.perf_counter() - started
+    grade = dataset.grade(solution.pop("answer_text"), problem)
+    return {
+        "problem_id": problem.id,
+        "draw": draw,
+        "question": problem.question,
+        "reference": problem.answer,
+        **solution,
+        "answer": grade.answer,
+        "parseable": grade.parseable,
+        "correct": grade.correct,
+        "elapsed_seconds": elapsed,
+    }
+
+
+def run(choices: Choices, settings: Mapping[str, Any], output: Path) -> dict[str, Any]:
+    validate_settings(dict(settings))
+    if choices.model != "ar":
+        raise SettingsError("only autoregressive inference is supported")
+    draws, seed = int(settings["run"]["draws"]), int(settings["run"]["seed"])
+    if draws < 1:
+        raise ValueError("run.draws must be positive")
+    dataset = load_dataset(choices.dataset, settings["datasets"][choices.dataset])
+    family = None
+    try:
+        family = _family(settings, choices, dataset)
+        identity = {
+            "choices": asdict(choices),
+            "effective_settings": effective_settings(settings, choices),
+            "models": family.artifacts(),
+            "dataset": dataset.describe(),
+            "source_sha256": json_sha256(source_sha256()),
+        }
+        fingerprint = json_sha256(identity)
+        directory = output / choices.dataset / choices.model / choices.label / fingerprint[:16]
+        manifest_path, records_path = directory / "manifest.json", directory / "records.jsonl"
+        executions_path = directory / "executions.json"
+        executions = json.loads(executions_path.read_text(encoding="utf-8")) if executions_path.is_file() else []
+        if not manifest_path.is_file():
+            write_json_atomic(manifest_path, {
+                "fingerprint": fingerprint, **identity, "settings": settings,
+                "settings_sha256": json_sha256(settings), "git": git_state(), "environment": environment(),
+                "created": _now(),
+            })
+        elif json.loads(manifest_path.read_text(encoding="utf-8"))["fingerprint"] != fingerprint:
+            raise ValueError(f"{directory} belongs to another run")
+        done = {(record["problem_id"], record["draw"]) for record in load_jsonl(records_path)}
+        pending = [(problem, draw) for draw in range(draws) for problem in dataset.problems
+                   if (problem.id, draw) not in done]
+        if pending:
+            family.load()
+            family.synchronize()
+            before = family.cost_snapshot()
+            execution: dict[str, Any] = {"started": _now(), "status": "running", "workers": family.workers,
+                                         "requested_records": len(pending), "completed": [], "output_tokens": 0}
+            execution["engine_execution"] = getattr(family, "execution_config", lambda: {})()
+            executions.append(execution)
+            write_json_atomic(executions_path, executions)
+            started = time.perf_counter()
+            lock = threading.Lock()
+            try:
+                with records_path.open("a", encoding="utf-8") as sink:
+
+                    def work(item: tuple[Problem, int]) -> None:
+                        problem, draw = item
+                        record = _solve(family, dataset, problem, draw, seed)
+                        with lock:
+                            sink.write(json.dumps(record, ensure_ascii=False) + "\n")
+                            sink.flush()
+                            done.add((problem.id, draw))
+                            execution["completed"].append({"problem_id": problem.id, "draw": draw})
+                            execution["output_tokens"] += record["output"]["tokens"]
+                            print(f"[{len(done)}/{len(dataset.problems) * draws}] {choices.label} problem={problem.id} "
+                                  f"draw={draw} correct={record['correct']} seconds={record['elapsed_seconds']:.1f}",
+                                  flush=True)
+
+                    with ThreadPoolExecutor(max_workers=family.workers) as pool:
+                        for future in [pool.submit(work, item) for item in pending]:
+                            future.result()
+                execution["status"] = "complete"
+            finally:
+                # The executor drains before this snapshot, including other workers after a failure.
+                family.synchronize()
+                after = family.cost_snapshot()
+                execution.update(status="complete" if execution["status"] == "complete" else "failed",
+                                 wall_seconds=time.perf_counter() - started,
+                                 cost={name: after[name] - value for name, value in before.items()})
+                write_json_atomic(executions_path, executions)
+        selected = {problem.id for problem in dataset.problems}
+        stored = load_jsonl(records_path)
+        records = [record for record in stored
+                   if record["problem_id"] in selected and record["draw"] < draws]
+        summary = {"fingerprint": fingerprint, "directory": str(directory), "updated": _now(),
+                   **summarize(records, draws=draws)}
+        summary["execution_totals"] = summarize_executions(executions, stored)
+        # A backend that measures each request keeps per-problem cost even while problems run concurrently.
+        attributed = sum(record["cost"] is not None for record in records)
+        summary["cost_attributed_records"] = attributed
+        summary["cost_total_scope"] = "selected_records"
+        if family.workers > 1 and attributed < len(records):
+            summary["cost_total"] = summary["execution_totals"]["cost_total"]
+            summary["cost_total_scope"] = "all_executions"
+        write_json_atomic(directory / "summary.json", summary)
+        return summary
+    finally:
+        if family is not None:
+            family.close()
+        dataset.close()
+
+
+__all__ = ["Choices", "effective_settings", "run"]

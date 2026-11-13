@@ -1,0 +1,90 @@
+"""Parser for Qwen3/Qwen3.5 XML-style tool calls."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from html import unescape
+
+from ..models import ToolCall
+
+
+_FUNCTION_RE = re.compile(
+    r"<\s*function\s*=\s*([^>]+?)\s*>(.*?)<\s*/\s*function\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAMETER_RE = re.compile(
+    r"<\s*parameter\s*=\s*([^>]+?)\s*>(.*?)<\s*/\s*parameter\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAMETER_OPEN_RE = re.compile(
+    r"<\s*parameter\s*=",
+    re.IGNORECASE,
+)
+_PARAMETER_CLOSE_RE = re.compile(
+    r"<\s*/\s*parameter\s*>",
+    re.IGNORECASE,
+)
+
+
+def _trim_wrapping_newline(value: str) -> str:
+    if value.startswith("\r\n"):
+        value = value[2:]
+    elif value.startswith("\n"):
+        value = value[1:]
+    if value.endswith("\r\n"):
+        value = value[:-2]
+    elif value.endswith("\n"):
+        value = value[:-1]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class QwenXmlToolCallParser:
+    """Decode ``<function=...><parameter=...>`` branches."""
+
+    name: str = "qwen_xml"
+
+    def parse(self, text: str) -> tuple[ToolCall, ...]:
+        calls: list[ToolCall] = []
+        for index, match in enumerate(_FUNCTION_RE.finditer(text)):
+            function_name = unescape(match.group(1)).strip()
+            if not function_name:
+                continue
+            body = match.group(2)
+            parameters = tuple(_PARAMETER_RE.finditer(body))
+            # Reject nested, dangling, or parser-contaminated parameter tags.
+            # The Qwen protocol has a flat parameter list, so treating malformed
+            # markup as a speculative call could execute different arguments.
+            if (
+                len(_PARAMETER_OPEN_RE.findall(body)) != len(parameters)
+                or len(_PARAMETER_CLOSE_RE.findall(body)) != len(parameters)
+                or any(
+                    _PARAMETER_OPEN_RE.search(parameter.group(2))
+                    or _PARAMETER_CLOSE_RE.search(parameter.group(2))
+                    for parameter in parameters
+                )
+            ):
+                continue
+            arguments: dict[str, str] = {}
+            malformed = False
+            for parameter in parameters:
+                parameter_name = unescape(parameter.group(1)).strip()
+                if not parameter_name or parameter_name in arguments:
+                    malformed = True
+                    break
+                arguments[parameter_name] = unescape(
+                    _trim_wrapping_newline(parameter.group(2))
+                )
+            if malformed:
+                continue
+            calls.append(
+                ToolCall(
+                    name=function_name,
+                    arguments=arguments,
+                    index=index,
+                    format=self.name,
+                    raw=match.group(0),
+                )
+            )
+        return tuple(calls)

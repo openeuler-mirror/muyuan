@@ -1,0 +1,121 @@
+/** Host-neutral speculative runtime surface. Pi adapters live in the root and extension entries. */
+export {
+	type ActionProjectionCoverage, type ActionProjectionRule,
+	READ_RANGE_ACTION_KEY_PROJECTOR, readRangesShareInFlight,
+} from "./action-key-projection.ts";
+export {
+	type ActionEffect,
+	type ActionKey,
+	type ActionKeyMatch,
+	type ActionKeyProjector,
+	type ActionSemanticsDefinition,
+	ActionSemanticsRegistry,
+	actionKeyCovers,
+	actionKeyMatch,
+	actionKeyMatches,
+	buildActionKey,
+	type CanonicalAction,
+	type ExactActionKeyMatch,
+	PI_ACTION_SEMANTICS,
+	type ProjectedActionKey,
+	type ProjectedActionKeyMatch,
+	type ResourceInputMatch,
+	type ResourceDependencyScope,
+} from "./action-semantics.ts";
+export type { DrafterToolDefinition } from "./common.ts";
+export { SCHEDULING_DEFAULTS, normalizeSchedulingSettings, type SchedulingSettings } from "./scheduling-settings.ts";
+export type * from "./events.ts";
+export * from "./effect-model.ts";
+export * from "./effect-transaction.ts";
+export {
+	type CapturedExecutionWorldResult,
+	emptyWorldReuseMetrics,
+	type ExecutionWorld,
+	type ExecutionWorldDiagnosticReport,
+	type ExecutionWorldDiagnosticSnapshot,
+	type ExecutionWorldDiagnosticsContext,
+	type ExecutionWorldObservation,
+	type ExecutionWorldOperation,
+	type ExecutionWorldOperationDiagnostic,
+	type ExecutionCapabilityStatus,
+	type ExecutionWorldHealthState,
+	type ExecutionWorldPreparation,
+	type ExecutionWorldRequest,
+	ExecutionWorldRouter,
+	executionCapabilityStatus,
+	type ExecutionScope,
+	type ExecutionWorldStorageControl,
+	type ExecutionWorldStorageSnapshot,
+	type ExecutionWorldScope,
+	type ExecutionWorldSpeculation,
+	type SpeculativeExecution,
+	type SpeculativeExecutionRoute,
+	sameSpeculativeExecutionRoute,
+	type WorldBranch,
+	type WorldCheckpoint,
+	type WorldCompatibilityEvidence,
+	type WorldExecutionMetrics,
+	type WorldReuseMetrics,
+	type WorldReuseStrategy,
+	type WorldResultCapture,
+} from "./execution-world.ts";
+export * from "./tool-execution-gateway.ts";
+export type * from "./plan-proposal.ts";
+export {
+	captureResourceVersion,
+	type ResourceChangeSet,
+	type ResourceDependency,
+	type ResourceInputPersistence,
+	type ResourceValidationMetrics,
+	ResourceVersionManager,
+	type ResourceVersionToken,
+	type ResourceVersionValidation,
+	releaseResourceVersion,
+	resourceDependencies,
+	validateResourceVersion,
+} from "./resource-version.ts";
+export type { ContentChunkLimits } from "./content-chunks.ts";
+export {
+	type AuthoritativeResultCapture,
+	type CandidatePreflight,
+	type ActorActionFeedback,
+	type ActorObservation,
+	type RuntimeEventMap,
+	type RuntimeTurnContext,
+	type PredictionFeedback,
+	candidateExecutionMs,
+	diagnosticAction,
+	diagnosticJson,
+	makeSpeculativeActionRuntime,
+	redactDiagnostics,
+	type SpeculativeActionRuntime,
+	type SpeculativeActionRuntimeAdapter,
+	type SpeculativeActionSettings,
+	type SpeculativeCandidate,
+	type SpeculativeDraftCandidate,
+	type MaterializedActorAction,
+	type MaterializedSpeculativeCandidate,
+	type SpeculativePlanSource,
+} from "./runtime.ts";
+export {
+	type ActorActionIdentity,
+	type ActorActionProvider,
+	type ActorActionSettlement,
+	type CandidateRejection,
+	cause,
+	type PlanActionIdentity,
+	type PredictionAdoption,
+	type PredictionIdentity,
+	type PredictionSettlement,
+	type ResolutionCause,
+	type ResolutionStage,
+	type ResourceValidation,
+	type SettledSourceRequest,
+	type SourceRequestIdentity,
+	type SourceRequestKind,
+	type SourceRequestSettlement,
+	type ValidationMetrics,
+	zeroValidationMetrics,
+} from "./settlement.ts";
+export * from "./task-timing.ts";
+export * from "./trace-summary.ts";

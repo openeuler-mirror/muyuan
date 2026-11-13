@@ -1,0 +1,555 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { ActionEffect, ActionKey, ActionSemanticsDefinition } from "./action-semantics.ts";
+import { effectCapabilitiesCover, type EffectCapabilities, type EffectRequirements } from "./effect-model.ts";
+import { cause, type ResourceValidation, zeroValidationMetrics } from "./settlement.ts";
+import { RuntimeLifecycleLane } from "./runtime-lifecycle.ts";
+import { errorMessage as errorDetail } from "./error-utils.ts";
+import { immutableSnapshot } from "./stable-json.ts";
+import { TimelineInterval, type TimelineDependency } from "./task-timing.ts";
+
+/** Concrete isolation used for one speculative execution. */
+export type SpeculativeExecution = "runtime_sandbox" | "resource_snapshot" | "workspace_branch";
+export type WorldReuseStrategy = "shared_result" | "exclusive_branch";
+export type ExecutionWorldScope = "runtime" | "fallback";
+
+/** Execution ownership, separate from reusable action identity and cross-call sharing permission. */
+export interface ExecutionScope { readonly sessionID: string; readonly turnID: string; readonly callID?: string; }
+
+export function snapshotExecutionScope(scope: ExecutionScope | undefined): ExecutionScope | undefined {
+	return scope ? Object.freeze({ sessionID: scope.sessionID, turnID: scope.turnID, ...(scope.callID !== undefined ? { callID: scope.callID } : {}) }) : undefined;
+}
+const executionScope = new AsyncLocalStorage<ExecutionScope | undefined>();
+export const currentExecutionScope = () => executionScope.getStore();
+export const withExecutionScope = <Value>(scope: ExecutionScope | undefined, execute: () => Value): Value => executionScope.run(snapshotExecutionScope(scope), execute);
+
+/** Tool effects are resolved independently from K(a) and prediction source. */
+export interface ExecutionWorldRequest {
+	readonly backend?: string;
+	readonly parentCheckpoint?: WorldCheckpoint;
+	readonly effect: ActionEffect;
+	readonly requirements: EffectRequirements;
+	/** Tool scope is still known during warm-up, before a concrete action key exists. */
+	readonly tool?: string;
+	/** Present for concrete candidates; omitted for best-effort turn warm-up. */
+	readonly action?: ActionKey;
+	/** Selected Actor executor, independent of whole-call reuse identity. */
+	readonly executionContext?: unknown;
+}
+
+/** One resolved execution capability. Absence of a route means speculation is blocked. */
+export interface SpeculativeExecutionRoute {
+	readonly isolation: SpeculativeExecution;
+	readonly reuse: WorldReuseStrategy;
+	readonly scope: ExecutionWorldScope;
+	readonly backend: string;
+	readonly fingerprint: string;
+	/** Backend-authenticated parent state this route can materialize; never a result-freshness proof. */
+	readonly acceptsCheckpoint?: (checkpoint: WorldCheckpoint) => boolean;
+	/** Scheduling hint only; false permits preparing against the current world. */
+	readonly dependsOn?: (parent: ActionKey) => Promise<boolean>;
+}
+
+export function sameSpeculativeExecutionRoute(left: SpeculativeExecutionRoute, right: SpeculativeExecutionRoute): boolean {
+	return (
+		left.isolation === right.isolation && left.reuse === right.reuse && left.scope === right.scope && left.backend === right.backend &&
+		left.fingerprint === right.fingerprint
+	);
+}
+
+const WORLD_REUSE_COUNTERS = [
+	"requests", "hits", "joinedHits", "sameTurnHits", "crossTurnHits", "unattributedHits",
+	"misses", "bypasses", "published", "tainted", "validationCandidates",
+	"validationPathsets", "validationFilesRead", "validationBytesRead", "validationArtifactsLoaded",
+	"validationArtifactBytesRead", "executionMs", "reusedProcessMs",
+	"wholeCommandRequests", "wholeCommandHits", "wholeCommandMisses", "wholeCommandPublished",
+	"wholeCommandReusedProcessMs",
+] as const;
+
+type WorldReuseCounter = typeof WORLD_REUSE_COUNTERS[number];
+/**
+ * Backend-neutral process-reuse accounting. Reused-process time is producer-observed work;
+ * complete-task latency and speedup come from TaskTimeline.
+ */
+export type WorldReuseMetrics = Readonly<Record<WorldReuseCounter, number>> & { readonly lastError?: string };
+const EMPTY_WORLD_REUSE_METRICS = Object.fromEntries(WORLD_REUSE_COUNTERS.map((key) => [key, 0])) as unknown as WorldReuseMetrics;
+
+export function emptyWorldReuseMetrics(): WorldReuseMetrics {
+	return { ...EMPTY_WORLD_REUSE_METRICS };
+}
+
+export interface WorldExecutionMetrics {
+	/** Validated result reuse performed by the world while executing the action. */
+	readonly reuse?: WorldReuseMetrics;
+}
+
+/** Backend-issued evidence; policy decides whether it matches the Actor world. */
+export type WorldCompatibilityEvidence =
+	| { readonly status: "compatible"; readonly backend: string; readonly executionFingerprint: string; }
+	| { readonly status: "incompatible" | "indeterminate"; readonly backend: string; readonly code: string; readonly detail?: string; };
+
+/** Immutable execution state from which a later speculative action may derive. */
+export interface WorldCheckpoint { readonly backend: string; readonly id: string; readonly lineage: string; readonly depth: number; }
+
+/** Opaque backend-issued capability for an internal unit; the enclosing action still owns permission. */
+export interface ExecutionOperationBinding {
+	readonly backend: string;
+	readonly identity: string;
+	/** The internal unit's effects; its enclosing tool still supplies the permission check. */
+	readonly semantics: Pick<ActionSemanticsDefinition, "effect" | "requirements" | "resourceScope">;
+	/** Live preparation hint only; true never replaces backend permission or dependency checks. */
+	readonly available?: boolean;
+	/** Retrieval hint only. The issuing backend must check the current enclosing action's complete K(a). */
+	readonly permissionHash: string;
+	readonly executionMs: number;
+	/** Isolated service estimate, including observed preparation and capture. */
+	/** Whether a run now would redo it: no result of it the backend holds is still valid for the workspace. */
+	readonly stale?: () => Promise<boolean>;
+	/** It reads what another process writes while it runs: alone, it runs only up to that input. */
+	readonly fed?: true;
+	/** Eligible to launch on current filesystem inputs without captured resources; not proof of parent independence or Actor freshness. */
+	readonly preparation?: "current_workspace";
+}
+
+/** Delivered only after the authoritative OS boundary confirms the internal result was consumed. */
+export interface ExecutionOperationAdoption {
+	readonly scope: ExecutionScope;
+	readonly id: string;
+	readonly sequence: number;
+	readonly backend: string;
+	readonly operationIdentity: string;
+	/** What producing the adopted result took, which the adopting call did not spend. */
+	readonly executionMs?: number;
+	/** The exact successful-consumption receipt also passed to authoritative computation accounting. */
+	readonly computation?: TimelineDependency;
+}
+
+/** Backend resources remain scoped and revocable; discovery alone grants no adoption authority. */
+export interface ExecutionResourceContext {
+	readonly inputs?: (path?: string) => Iterable<object>;
+	readonly onInputSource?: (source: object) => void;
+	readonly onOperationAdopted?: (adoption: ExecutionOperationAdoption) => void;
+	/** Scheduling hint only; the backend still proves every join. */
+	readonly onOperationJoinable?: (available: () => boolean) => void;
+	readonly acceptOperationScope?: (scope: ExecutionScope, salvage?: boolean) => boolean;
+}
+
+/** Input-only owners omit output and can serve proven queries, never the source action's result or effects. */
+export type WorldOutput<Output> = { readonly output: Output; readonly inputsOnly?: never } | { readonly inputsOnly: true; readonly output?: never };
+
+/** Sealed backend artifact; ephemeral process, environment and network state do not cross this boundary.
+ * Backends provide idempotent commits; EffectTransaction owns validation and adoption. */
+export type WorldBranch<Output> = WorldOutput<Output> & {
+	readonly backend: string;
+	/** Observed internal work. Only successful Actor adoption makes these authoritative learning inputs. */
+	readonly operations?: readonly ExecutionOperationBinding[];
+	readonly computationDependencies?: readonly TimelineDependency[];
+	readonly checkpoint?: WorldCheckpoint;
+	readonly resources: readonly string[];
+	/** Optional lookup priority hints; neither completeness nor adoption authority. */
+	readonly inputResources?: readonly { readonly path: string; readonly descendants?: boolean }[];
+	/** Opaque backend input owner; preserved through transactions, never result adoption authority. */
+	readonly inputSource?: object;
+	/** Revoke borrowable inputs, optionally returning removed indexed names; sealed output proofs remain. */
+	readonly invalidateInputs?: (paths: readonly string[]) => void | readonly string[];
+	/** Transfer one input owner after a successful commit; the receiver owns its cleanup. */
+	readonly takeCommittedInputs?: (maxBytes: number) => Promise<(WorldBranch<Output> & { readonly inputsOnly: true }) | undefined>;
+	/** Before any commit, the unchanged bytes an exclusive branch read, as an independent input owner (at most once). */
+	readonly takeReadInputs?: (maxBytes: number) => Promise<(WorldBranch<Output> & { readonly inputsOnly: true }) | undefined>;
+	/** May evaluate the current action instead of only the source executor. Still requires query evidence. */
+	readonly reconstructionScope?: "current_action";
+	/** Captured persistent-effect bytes, excluding the serialized tool output. */
+	readonly capturedBytes: number;
+	readonly executionMetrics: WorldExecutionMetrics;
+	readonly compatibility: WorldCompatibilityEvidence;
+	/** Required for shared results; exclusive branches may instead prove conflicts atomically at commit. */
+	readonly validate?: () => Promise<ResourceValidation>;
+	/** Shared observations only: prove freshness and complete the effect-free backend commit together.
+	 * Every call must validate afresh; the coordinator still owns Actor adoption and may call commit again. */
+	readonly validateAndCommit?: () => Promise<ResourceValidation>;
+	/** Re-evaluate sealed inputs; an optional query proof excludes inputs that evaluation never used. */
+	readonly reconstruct?: (request: {
+		readonly action: ActionKey;
+		readonly args: unknown;
+		readonly callID: string;
+		readonly signal: AbortSignal;
+		/** Leased sealed owners from the session's input index; the backend must prove every borrowed dependency. */
+		readonly inputs?: (path?: string) => Iterable<object>;
+	}) => Promise<(Partial<Pick<WorldBranch<Output>, "compatibility" | "validate" | "capturedBytes" | "dispose">> & {
+		readonly output: Output;
+		/** Query-owned proof and storage; dispose after its last reader. Never commits the source output.
+		 * A composed query cannot fall back to the source branch's narrower proof. */
+		readonly requiresQueryValidation?: true;
+	}) | undefined>;
+	/** Shared adoption returns the sealed output; only exclusive effects may return an updated settlement.
+	 * Unknown failures are indeterminate; backends may mark fully restored failures as recoverable. */
+	readonly commit: () => Promise<Output>;
+	/** Idempotently release every branch-local handle. Must be safe before or after commit. */
+	readonly dispose: () => void | Promise<void>;
+}
+
+/** Only an actual backend proof can authorize a sealed result; path/event hints cannot replace it. */
+export async function validateWorldBranch<Output>(branch: Pick<WorldBranch<Output>, "validate"> | undefined, reuse: WorldReuseStrategy): Promise<ResourceValidation> {
+	try {
+		const validation: ResourceValidation = branch?.validate ? await branch.validate() : branch && reuse === "exclusive_branch"
+			? { status: "valid", metrics: zeroValidationMetrics() }
+			: { status: "indeterminate", cause: cause("freshness", "validation_unavailable"), metrics: zeroValidationMetrics() };
+		return immutableSnapshot(validation);
+	} catch (error) {
+		return immutableSnapshot({ status: "indeterminate", cause: cause("freshness", "validation_failed", errorDetail(error)), metrics: zeroValidationMetrics() });
+	}
+}
+
+/** Pre-execution evidence that can seal one externally executed authoritative result. */
+export interface WorldResultCapture<Output> {
+	/** The capture retains inputs only; it cannot authorize reuse of the captured action's output. */
+	readonly inputsOnly?: true;
+	/** Revocable inputs available during execution and sealable after failure; does not grant output authority. */
+	readonly inputSource?: object;
+	/** Transfer completed work at most once. Only input captures may seal without a successful output. */
+	readonly seal: (output?: Output) => WorldBranch<Output> | Promise<WorldBranch<Output>>;
+	/** Release an unsealed baseline. Idempotent; a sealed branch owns its own cleanup. */
+	readonly dispose: () => void | Promise<void>;
+}
+
+export interface CapturedExecutionWorldResult<Output> extends Pick<WorldBranch<Output>, "computationDependencies"> {
+	readonly route: SpeculativeExecutionRoute;
+	readonly capture: WorldResultCapture<Output>;
+}
+
+export interface ExecutionWorldPreparation { readonly cwd: string; readonly signal?: AbortSignal; }
+
+export type ExecutionWorldHealthState = "registered" | "ready" | "unavailable";
+
+export interface ExecutionWorldStorageSnapshot {
+	readonly entries: number;
+	readonly maxEntries: number;
+	readonly bytes: number;
+	readonly maxBytes: number;
+	readonly orphanArtifacts?: number;
+	readonly overBudget: boolean;
+}
+
+export interface ExecutionWorldStorageControl {
+	/** Applies the retention policy synchronously; reclamation remains an explicit maintenance action. */
+	readonly configure: (limits: Pick<ExecutionWorldStorageSnapshot, "maxEntries" | "maxBytes">) => void;
+	readonly maintain: (operation: "gc" | "clear") => Promise<{
+		readonly removedEntries: number;
+		readonly removedArtifacts: number;
+		readonly removedBytes: number;
+	}>;
+}
+
+/** Backend-owned health independent from whether one concrete action has selected this world. */
+export interface ExecutionWorldDiagnosticReport {
+	readonly state: ExecutionWorldHealthState;
+	readonly detail: string;
+	readonly storage?: ExecutionWorldStorageSnapshot;
+}
+
+export interface ExecutionWorldDiagnosticsContext extends ExecutionWorldPreparation {
+	/** Re-run backend capability probes instead of using their cached result. */
+	readonly refresh?: boolean;
+}
+
+/** Source-neutral world status; capabilities describe speculative execution, with observation reported separately below. */
+export interface ExecutionWorldDiagnosticSnapshot extends ExecutionWorldOperationDiagnostic {
+	readonly id: string;
+	readonly scope: ExecutionWorldScope;
+	readonly isolation: SpeculativeExecution;
+	/** Independently probed Actor-authorized observation, when the world provides it. */
+	readonly observation?: ExecutionWorldOperationDiagnostic;
+}
+
+export interface ExecutionWorldOperationDiagnostic extends ExecutionWorldDiagnosticReport, Pick<ExecutionWorldOperation, "capabilities" | "tools"> {}
+
+/** Fast, side-effect-free view of whether the registered worlds can route one effect contract. */
+export interface ExecutionCapabilityStatus {
+	readonly state: ExecutionWorldHealthState;
+	readonly primary?: ExecutionWorldDiagnosticSnapshot;
+	readonly candidates: readonly ExecutionWorldDiagnosticSnapshot[];
+}
+
+export function executionCapabilityStatus(
+	requirements: EffectRequirements,
+	worlds: readonly ExecutionWorldDiagnosticSnapshot[],
+	operation: "speculation" | "observation" = "speculation",
+	tool?: string,
+): ExecutionCapabilityStatus {
+	const candidates = (["runtime", "fallback"] as const).flatMap((scope) =>
+		worlds.flatMap((world) => {
+			if (world.scope !== scope) return [];
+			const diagnostic = operation === "speculation" ? world : world.observation;
+			return diagnostic && supportsTool(diagnostic, tool) && effectCapabilitiesCover(diagnostic.capabilities, requirements) ? [{ ...world, ...diagnostic }] : [];
+		}),
+	);
+	const primary = candidates.find((world) => world.state === "ready") ?? candidates.find((world) => world.state === "registered") ?? candidates[0];
+	return Object.freeze({ state: primary?.state ?? "unavailable", ...(primary ? { primary } : {}), candidates: Object.freeze(candidates) });
+}
+
+export interface ExecutionWorldOperation {
+	/** Atomic effects this operation can safely contain, observe, virtualize, or validate. */
+	readonly capabilities: EffectCapabilities;
+	/** Optional provider-native tool scope; omitted means every covered tool, and effect capabilities remain the safety boundary. */
+	readonly tools?: readonly string[];
+	/** Stable identity of the concrete provider used for route-local reuse. */
+	readonly fingerprint?: (request: ExecutionWorldRequest) => string | Promise<string>;
+	/** Idempotent and concurrency-safe; reject while unavailable so resolution can try the next world. */
+	readonly prepare?: (input: ExecutionWorldPreparation) => Promise<void>;
+	/** Read-only health and diagnostics. It must not weaken or bypass route preparation. */
+	readonly diagnostics?: (
+		input: ExecutionWorldDiagnosticsContext,
+	) => ExecutionWorldDiagnosticReport | Promise<ExecutionWorldDiagnosticReport>;
+}
+
+export interface ExecutionWorldSpeculation<Context, Output> extends ExecutionWorldOperation {
+	/** Explicit ancestry interoperability across routes; implementations must authenticate the checkpoint and workspace. */
+	readonly acceptsCheckpoint?: (checkpoint: WorldCheckpoint, cwd: string) => boolean;
+	readonly dependsOn?: (action: ActionKey, parent: ActionKey) => Promise<boolean>;
+	readonly execute: (context: Context) => Promise<WorldBranch<Output>>;
+}
+
+export interface ExecutionWorldObservation<Context, Output> extends ExecutionWorldOperation {
+	/** Observe inputs without claiming authority over the action's other effects or output. */
+	readonly inputsOnly?: (request: ExecutionWorldRequest) => boolean;
+	/** Capture freshness before a host-authoritative execution without executing the tool again. */
+	readonly capture: (context: Context) => Promise<WorldResultCapture<Output>>;
+}
+
+interface ExecutionWorldLifecycle<Context, Output, ObservationContext> {
+	readonly id: string;
+	/** Optional persistent storage capability, independent from tool or action syntax. */
+	readonly storage?: ExecutionWorldStorageControl;
+	/** Pre-Actor execution and Actor-authorized observation deliberately have independent authority. */
+	readonly speculation?: ExecutionWorldSpeculation<Context, Output>;
+	readonly observation?: ExecutionWorldObservation<ObservationContext, Output>;
+	/** Observe proven internal work inside exactly one native Actor call; never seals its whole result. */
+	readonly observeOperations?: <Value>(request: { readonly action: ActionKey | undefined; readonly scope: ExecutionScope; readonly learn?: boolean;
+		readonly inputs?: (path?: string) => Iterable<object>; readonly cwd?: string; readonly signal?: AbortSignal; readonly enabled?: boolean; readonly reuseEnabled?: boolean },
+		execute: () => Promise<Value>, observe: (bindings: readonly ExecutionOperationBinding[], computations?: readonly TimelineDependency[]) => void) => Promise<Value>;
+	/** Retire preparation invalidated by an Actor mutation before its successors may launch. */
+	readonly actorFallbackSettled?: () => Promise<void>;
+	/** Release turn-owned preparation; independently retained branches keep their own leases. */
+	readonly finishTurn?: (turnID: string) => Promise<void>;
+	/** Abort and drain backend-owned forks and branch cleanup before resolving. */
+	readonly dispose?: () => Promise<void>;
+}
+
+/** Source-independent lifecycle for isolating, sealing, and committing speculative effects. */
+export type ExecutionWorld<Context, Output, ObservationContext = Context> = ExecutionWorldLifecycle<Context, Output, ObservationContext> &
+	(
+		| {
+				/** A runtime world is preferred when its advertised guarantees cover the operation. */
+				readonly scope: "runtime";
+				readonly isolation: "runtime_sandbox";
+		  }
+		| {
+				/** A host-local fallback advertises the same source-neutral effect guarantees. */
+				readonly scope: "fallback";
+				readonly isolation: Exclude<SpeculativeExecution, "runtime_sandbox">;
+		  }
+	);
+
+type ExecutionWorldAdmission<Context, Output, ObservationContext> = (world: ExecutionWorld<Context, Output, ObservationContext>,
+	operation: "speculation" | "observation" | "observeOperations") => string | undefined;
+
+/** The only authority allowed to resolve, prepare, fork, and dispose speculative tool execution. */
+export class ExecutionWorldRouter<Context, Output, ObservationContext = Context> {
+	protected readonly lifecycle: RuntimeLifecycleLane;
+	private readonly speculationEnabled: (backend: string) => boolean;
+	private readonly admission?: ExecutionWorldAdmission<Context, Output, ObservationContext>;
+	private readonly worldsByID = new Map<string, ExecutionWorld<Context, Output, ObservationContext>>();
+	private readonly routeObservations = new Map<string, ExecutionWorldDiagnosticReport & { readonly cwd: string }>();
+
+	constructor(worlds: readonly ExecutionWorld<Context, Output, ObservationContext>[], speculationEnabled: (backend: string) => boolean = () => true,
+		lifecycle = new RuntimeLifecycleLane(), admission?: ExecutionWorldAdmission<Context, Output, ObservationContext>) {
+		this.lifecycle = lifecycle;
+		this.speculationEnabled = speculationEnabled;
+		this.admission = admission;
+		for (const world of new Set(worlds)) {
+			if (!world.id.trim()) throw new Error("execution world id must not be empty");
+			if (!world.speculation && !world.observation && !world.observeOperations) throw new Error(`execution world ${world.id} provides no operation`);
+			if (this.worldsByID.has(world.id)) throw new Error(`duplicate execution world ${world.id}`);
+			this.worldsByID.set(world.id, world);
+		}
+	}
+
+	/** Runtime sandbox first, then local fallback; unavailable worlds are skipped. */
+	async resolve(
+		request: ExecutionWorldRequest,
+		preparation: ExecutionWorldPreparation,
+	): Promise<SpeculativeExecutionRoute | undefined> {
+		return this.lifecycle.admit(() => this.select("speculation", request, preparation, (_world, route) => route));
+	}
+
+	fork(route: SpeculativeExecutionRoute, context: Context): Promise<WorldBranch<Output>> {
+		const world = this.worldsByID.get(route.backend);
+		if (!world || world.scope !== route.scope || world.isolation !== route.isolation)
+			throw new Error(`Execution world ${route.backend} is unavailable for ${route.isolation}`);
+		const rejected = this.admission?.(world, "speculation");
+		if (rejected) throw new Error(rejected);
+		if (!this.speculationEnabled(world.id)) throw new Error(`Execution world ${world.id} is disabled by routing policy`);
+		if (!world.speculation) throw new Error(`Execution world ${world.id} does not provide speculative execution`);
+		return this.lifecycle.admit(() => world.speculation!.execute(context));
+	}
+
+	observeOperations<Value>(action: ActionKey | undefined, scope: ExecutionScope, execute: () => Promise<Value>,
+		observe: (bindings: readonly ExecutionOperationBinding[], computations?: readonly TimelineDependency[]) => void, learn = false,
+		inputs?: (path?: string) => Iterable<object>, context?: { readonly cwd: string; readonly signal?: AbortSignal; readonly reuseEnabled?: boolean }): Promise<Value> {
+		for (const world of this.worldsByID.values()) {
+			if (!world.observeOperations || this.admission?.(world, "observeOperations")) continue;
+			const next = execute;
+			execute = () => world.observeOperations!({ action, scope, learn, inputs, enabled: true, ...context }, next, observe);
+		}
+		return execute();
+	}
+
+	/** Select a capture-capable world and snapshot its baseline before host execution. */
+	async captureAuthoritativeResult(
+		request: ExecutionWorldRequest,
+		preparation: ExecutionWorldPreparation,
+		context: ObservationContext,
+	): Promise<CapturedExecutionWorldResult<Output> | undefined> {
+		return this.lifecycle.admit(() => this.select(
+			"observation",
+			request,
+			preparation,
+			async (world, route) => {
+				const { output: capture, dependencies: computationDependencies } = await TimelineInterval.collect(() => world.observation!.capture(context));
+				if ((!request.action || !effectCapabilitiesCover(world.observation!.capabilities, request.requirements)) && !capture.inputsOnly) {
+					await capture.dispose(); throw new Error("input_only_capture_required");
+				}
+				return Object.freeze({ route: capture.inputsOnly ? Object.freeze({ ...route, reuse: "shared_result" as const }) : route, capture, computationDependencies });
+			},
+		));
+	}
+
+	dispose(): Promise<void> {
+		return this.lifecycle.close(async () => {
+			await this.lifecycle.drain();
+			const closed = await Promise.allSettled([...this.worldsByID.values()].map(async (world) => world.dispose?.()));
+			const failures = closed.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+			if (failures.length) throw new AggregateError(failures, "Execution world cleanup failed");
+		});
+	}
+
+	/** Inspect every registered world without attempting a speculative action. */
+	async diagnostics(input: ExecutionWorldDiagnosticsContext): Promise<readonly ExecutionWorldDiagnosticSnapshot[]> {
+		return this.lifecycle.admit(() => Promise.all(
+			[...this.worldsByID.values()].map(async (world) => {
+				const rejected = this.admission?.(world, "speculation");
+				if (rejected) return Object.freeze({ id: world.id, scope: world.scope, isolation: world.isolation,
+					capabilities: Object.freeze([]), state: "unavailable" as const, detail: rejected });
+				const speculation = world.speculation
+					? this.speculationEnabled(world.id)
+						? await this.diagnose(world.id, "speculation", world.speculation, input)
+						: {
+								capabilities: world.speculation.capabilities,
+								...(world.speculation.tools ? { tools: world.speculation.tools } : {}),
+								state: "unavailable" as const,
+								detail: "Pre-execution disabled by routing policy",
+							}
+					: { capabilities: Object.freeze([]), state: "unavailable" as const, detail: "Speculative execution is not provided" };
+				const observation = world.observation && !this.admission?.(world, "observation") ? await this.diagnose(world.id, "observation", world.observation, input) : undefined;
+				return Object.freeze({ id: world.id, scope: world.scope, isolation: world.isolation, ...speculation, ...(observation ? { observation } : {}) });
+			}),
+		));
+	}
+
+	private async select<Selected>(
+		kind: "speculation" | "observation",
+		request: ExecutionWorldRequest,
+		preparation: ExecutionWorldPreparation,
+		select: (
+			world: ExecutionWorld<Context, Output, ObservationContext>,
+			route: SpeculativeExecutionRoute,
+		) => Selected | undefined | Promise<Selected | undefined>,
+	): Promise<Selected | undefined> {
+		for (const scope of ["runtime", "fallback"] as const) {
+			for (const world of this.worldsByID.values()) {
+				if (this.admission?.(world, kind) || world.scope !== scope || request.backend !== undefined && request.backend !== world.id ||
+					(kind === "speculation" && !this.speculationEnabled(world.id))) continue;
+				const operation = world[kind];
+				if (!operation) continue;
+				try {
+					if (!supportsTool(operation, request.action?.tool ?? request.tool)) continue;
+					const acceptsCheckpoint = kind === "speculation" && world.speculation?.acceptsCheckpoint;
+					if (request.parentCheckpoint && (!acceptsCheckpoint || !acceptsCheckpoint(request.parentCheckpoint, preparation.cwd))) continue;
+					if (!effectCapabilitiesCover(operation.capabilities, request.requirements) &&
+						!(kind === "observation" && world.observation?.inputsOnly?.(request))) continue;
+					const fingerprint = (await operation.fingerprint?.(request)) ?? `${world.id}:${world.isolation}`;
+					await operation.prepare?.(preparation);
+					this.observeRoute(world.id, kind, preparation.cwd, "ready", "Route prepared successfully");
+					const cwd = preparation.cwd;
+					const route: SpeculativeExecutionRoute = {
+						isolation: world.isolation,
+						reuse: request.effect === "observation" && !request.parentCheckpoint ? "shared_result" : "exclusive_branch",
+						scope,
+						backend: world.id,
+						fingerprint,
+					};
+					// Capability stays out of transaction snapshots, diagnostic serialization and copied routes.
+					if (acceptsCheckpoint) {
+						const owner = new WeakRef(acceptsCheckpoint), lifetime = new WeakRef(this.lifecycle);
+						Object.defineProperty(route, "acceptsCheckpoint", {
+							value: (checkpoint: WorldCheckpoint) => lifetime.deref()?.sealed === false && owner.deref()?.(checkpoint, cwd) === true,
+						});
+					}
+					if (kind === "speculation" && request.action && world.speculation?.dependsOn) {
+						const action = request.action, dependsOn = world.speculation.dependsOn;
+						Object.defineProperty(route, "dependsOn", { value: (parent: ActionKey) => dependsOn(action, parent) });
+					}
+					Object.freeze(route);
+					const selected = await select(world, route);
+					if (selected !== undefined) return selected;
+				} catch (error) {
+					if (preparation.signal?.aborted) throw error;
+					this.observeRoute(world.id, kind, preparation.cwd, "unavailable", errorDetail(error));
+					// Unavailable worlds are skipped in explicit capability order.
+				}
+			}
+		}
+		return undefined;
+	}
+
+	private async diagnose(
+		id: string,
+		kind: "speculation" | "observation",
+		operation: ExecutionWorldOperation,
+		input: ExecutionWorldDiagnosticsContext,
+	): Promise<ExecutionWorldOperationDiagnostic> {
+		const key = `${id}:${kind}`;
+		if (input.refresh) this.routeObservations.delete(key);
+		let report: ExecutionWorldDiagnosticReport | undefined;
+		try {
+			report = await operation.diagnostics?.(input);
+			if (!report && input.refresh && operation.prepare) {
+				await operation.prepare(input);
+				report = { state: "ready", detail: "Route prepared successfully" };
+			}
+		} catch (error) {
+			report = { state: "unavailable", detail: errorDetail(error) };
+		}
+		if (input.refresh && report) this.routeObservations.set(key, { ...report, cwd: input.cwd });
+		const route = this.routeObservations.get(key);
+		if (route?.cwd === input.cwd && route.state === "unavailable") report = route;
+		return Object.freeze({
+			capabilities: operation.capabilities,
+			...(operation.tools ? { tools: Object.freeze([...operation.tools]) } : {}),
+			...(report ?? (route?.cwd === input.cwd ? route : undefined) ?? { state: "registered", detail: "Registered; availability is checked during route preparation" }),
+		});
+	}
+
+	private observeRoute(
+		id: string,
+		kind: "speculation" | "observation",
+		cwd: string,
+		state: ExecutionWorldHealthState,
+		detail: string,
+	): void {
+		this.routeObservations.set(`${id}:${kind}`, { state, cwd, detail });
+	}
+}
+
+function supportsTool(operation: { readonly tools?: readonly string[] }, tool: string | undefined): boolean {
+	return tool === undefined || operation.tools === undefined || operation.tools.includes(tool);
+}

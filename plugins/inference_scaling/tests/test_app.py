@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+import copy
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from inference_scaling.app.cli import parse
+from inference_scaling.app.run import Choices, run
+from inference_scaling.app.settings import SCHEMA, SettingsError, check, load_settings, validate_settings
+from tests.tabular import TabularAutoregressiveBackend
+
+
+def test_cli_defaults_and_reward_rules(monkeypatch) -> None:
+    choices, output = parse([])
+    assert choices == Choices("is", "ar", "self_certainty", "gsm8k") and output == Path("results")
+    settings = load_settings()
+    assert settings["ar"]["algorithms"]["is"] == {
+        "candidate_count": 4, "rollout_count": 1, "block_size": 1024, "block_first": False,
+        "exploration_schedule": "two_stage", "selection_ready": True, "selection": "sir",
+    }
+    assert settings["rewards"]["self_certainty"] == {"temperature": 0.25, "score_temperature": 1.0, "scope": "thinking"}
+    assert settings["ar"]["engine"]["vllm"]["scalar_self_certainty"]
+    settings["run"]["reward"] = "consilience"
+    monkeypatch.setattr("inference_scaling.app.cli.load_settings", lambda: settings)
+    assert parse(["--algorithm", "mh"])[0].reward == "consilience"
+    assert parse(["--reward", "self_certainty"])[0].reward == "self_certainty"
+    assert parse(["--algorithm", "sample"])[0].reward is None
+    assert parse(["--algorithm", "best_of_n", "--reward", "verifier"])[0].label == "best_of_n-verifier"
+    for argv in (["--model", "dllm"], ["--algorithm", "greedy", "--reward", "verifier"], ["--reward", "vote"]):
+        with pytest.raises(SystemExit):
+            parse(argv)
+
+
+def test_settings_reject_missing_unknown_and_mistyped_keys() -> None:
+    settings = load_settings()
+    broken = copy.deepcopy(settings)
+    broken["ar"]["sampling"]["extra"] = 1
+    with pytest.raises(SettingsError, match="unknown keys \\['extra'\\]"):
+        check(broken, SCHEMA, "settings")
+    broken = copy.deepcopy(settings)
+    del broken["rewards"]["verifier"]["pool_size"]
+    with pytest.raises(SettingsError, match="missing keys \\['pool_size'\\]"):
+        check(broken, SCHEMA, "settings")
+    broken = copy.deepcopy(settings)
+    broken["run"]["draws"] = True
+    with pytest.raises(SettingsError, match="must be an integer"):
+        check(broken, SCHEMA, "settings")
+    broken = copy.deepcopy(settings)
+    broken["ar"]["algorithms"]["mh"]["proposal"] = "sometimes"
+    with pytest.raises(SettingsError, match="must be one of"):
+        check(broken, SCHEMA, "settings")
+    broken = copy.deepcopy(settings)
+    broken["datasets"]["gsm8k"]["max_new_tokens"] = 32768
+    with pytest.raises(SettingsError, match="unknown keys"):
+        validate_settings(broken)
+    broken = copy.deepcopy(settings)
+    broken["ar"]["engine"]["context_window"] = 0
+    with pytest.raises(SettingsError, match="positive or null"):
+        validate_settings(broken)
+    broken = copy.deepcopy(settings)
+    broken["ar"]["engine"]["vllm"]["engine_kwargs"]["max_model_len"] = 32768
+    with pytest.raises(SettingsError, match="set ar.engine.context_window"):
+        validate_settings(broken)
+
+
+class ThinkingTokenizer:
+    eos_token_id = 2
+
+    def get_vocab(self):
+        return {"<think>": 3, "</think>": 1, "7": 0, "<eos>": 2}
+
+
+@dataclass(frozen=True)
+class Counters:
+    generation_forward_token_slots: int
+    score_forward_token_slots: int
+    estimated_dense_forward_flops: int
+
+
+class ThinkingBackend(TabularAutoregressiveBackend):
+    """Every prompt opens a thought: the model thinks "7", closes it, answers "7" and stops."""
+
+    tokenizer = ThinkingTokenizer()
+    parameter_count = 10
+
+    def __init__(self) -> None:
+        super().__init__({(3,): (1, 0, 0, 0), (3, 0): (0, 1, 0, 0), (3, 0, 1): (1, 0, 0, 0),
+                          (3, 0, 1, 0): (0, 0, 1, 0)}, fallback=(0, 0, 1, 0))
+        self.generated = 0
+
+    def encode(self, text, *, add_special_tokens=False):
+        return (self.tokenizer.get_vocab().get(text, 3),)
+
+    def decode(self, tokens, *, skip_special_tokens=True):
+        return "#### " + "".join("7" for token in tokens if token == 0)
+
+    def sample_batch(self, requests):
+        samples = super().sample_batch(requests)
+        self.generated += sum(len(sample.token_ids) for sample in samples)
+        return samples
+
+    def snapshot(self):
+        return Counters(self.generated, 0, 2 * self.parameter_count * self.generated)
+
+    def direct_generate(self, prefix, *, max_new_tokens, num_beams):
+        return (0, 1, 0, 2)[:max_new_tokens]
+
+    def _statistic(self, context, statistic):
+        # The model is certain, so a finite constant stands in for its infinite top-K confidence.
+        return 1.0
+
+
+@pytest.fixture
+def ar_settings(base_settings, tmp_path, monkeypatch):
+    settings = base_settings
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "model.safetensors").write_bytes(b"weights")
+    settings["ar"]["model"].update(path=str(model), revision=None, weight_sha256=None)
+    # The fake backend computes any token statistic, as the Transformers engine does.
+    settings["ar"]["engine"].update(backend="transformers", device="cpu")
+    settings["rewards"]["verifier"]["pool_size"] = 3
+    settings["ar"]["algorithms"]["is"].update(candidate_count=2, rollout_count=1, block_size=2,
+                                             exploration_schedule="fixed", selection_ready=False)
+    monkeypatch.setattr("inference_scaling.app.ar.load_backend", lambda *args, **kwargs: ThinkingBackend())
+    return settings
+
+
+AR_RUNS = [
+    ("sample", None, {}), ("greedy", None, {}), ("beam", None, {}),
+    ("best_of_n", "verifier", {"source": "vote"}),
+    ("mh_power", None, {}),
+    ("mh", "consilience", {"ensemble_size": 3, "iterations": 2, "suffix_schedule": "log_uniform", "execution": "pipeline"}),
+    ("is", "self_certainty", {}),
+]
+
+
+@pytest.mark.parametrize(("algorithm", "reward", "options"), AR_RUNS)
+def test_every_ar_algorithm_writes_graded_records_and_resumes(ar_settings, tmp_path, algorithm, reward, options):
+    ar = ar_settings["ar"]
+    for key in ("ensemble_size", "iterations", "suffix_schedule", "execution"):
+        if key in options:
+            ar["algorithms"]["mh"][key] = options[key]
+    if "source" in options:
+        ar_settings["rewards"]["verifier"]["source"] = options["source"]
+    choices = Choices(algorithm, "ar", reward, "gsm8k")
+
+    summary = run(choices, ar_settings, tmp_path / "results")
+    directory = Path(summary["directory"])
+    assert directory.parent == tmp_path / "results" / "gsm8k" / "ar" / choices.label
+    records = [json.loads(line) for line in (directory / "records.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(record["problem_id"], record["draw"]) for record in records] == [("0", 0), ("1", 0)]
+    for record in records:
+        # The graded text is the answer after the thought, not the whole output.
+        assert record["output"]["content"] == "#### 7" and record["correct"] and record["answer"] == "7"
+        assert record["cost"]["forward_token_slots"] > 0
+        assert (record["reward"] is None) == (reward is None)
+        if options.get("execution") == "pipeline":
+            assert record["trace"]["execution"] == "batch"  # This fixture has no streaming capability.
+    assert summary["accuracy"] == 1.0 and summary["records"] == 2
+    execution = summary["execution_totals"]
+    assert execution["cost_total"]["forward_token_slots"] == summary["cost_total"]["forward_token_slots"]
+    assert execution["cost_total"]["flops"] == summary["cost_total"]["flops"]
+    assert execution["complete_accounting"] and execution["completed_records"] == 2
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["choices"] == {"algorithm": algorithm, "model": "ar", "reward": reward, "dataset": "gsm8k"}
+    assert manifest["effective_settings"]["algorithm"] == ar["algorithms"][algorithm]
+    assert run(choices, ar_settings, tmp_path / "results")["records"] == 2
+    assert len((directory / "records.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_extra_draws_resume_the_same_run_and_report_pass_at_k(ar_settings, tmp_path):
+    choices = Choices("sample", "ar", None, "gsm8k")
+    first = run(choices, ar_settings, tmp_path / "results")
+    ar_settings["run"]["draws"] = 2
+    second = run(choices, ar_settings, tmp_path / "results")
+    assert second["directory"] == first["directory"]
+    assert second["records"] == 4 and second["pass_at_k"] == {"1": 1.0, "2": 1.0}
+
+
+def test_concurrent_problems_share_a_batching_backend_without_per_problem_cost(ar_settings, tmp_path):
+    ar_settings["ar"]["engine"]["continuous_batching"]["workers"] = 2
+    summary = run(Choices("best_of_n", "ar", "verifier", "gsm8k"), ar_settings, tmp_path / "results")
+    records = (Path(summary["directory"]) / "records.jsonl").read_text(encoding="utf-8").splitlines()
+    assert sorted(json.loads(line)["problem_id"] for line in records) == ["0", "1"]
+    assert all(json.loads(line)["cost"] is None for line in records)
+    execution = summary["execution_totals"]
+    assert summary["cost_total_scope"] == "all_executions"
+    assert summary["cost_total"]["forward_token_slots"] > 0 and summary["cost_total"]["flops"] > 0
+    assert execution["wall_seconds"] > 0 and execution["output_tokens_per_second"] > 0
+    assert execution["output_tokens"] == sum(json.loads(line)["output"]["tokens"] for line in records)
+    assert execution["completed_records"] == 2 and execution["complete_accounting"]
+
+    choices = Choices("best_of_n", "ar", "verifier", "gsm8k")
+    first = summary
+    again = run(choices, ar_settings, tmp_path / "results")
+    assert again["execution_totals"] == first["execution_totals"]
+    ar_settings["run"]["draws"] = 2
+    second = run(choices, ar_settings, tmp_path / "results")
+    assert second["directory"] == first["directory"]
+    assert second["cost_total"]["forward_token_slots"] == 2 * first["cost_total"]["forward_token_slots"] > 0
+    assert second["execution_totals"]["completed_records"] == 4
+    assert second["execution_totals"]["wall_seconds"] > first["execution_totals"]["wall_seconds"]
+    executions = json.loads((Path(second["directory"]) / "executions.json").read_text(encoding="utf-8"))
+    assert len(executions) == 2 and all(entry["status"] == "complete" for entry in executions)
+    # Asking for fewer draws changes quality summaries, not the historical cost scope.
+    ar_settings["run"]["draws"] = 1
+    smaller = run(choices, ar_settings, tmp_path / "results")
+    assert smaller["records"] == 2 and smaller["execution_totals"] == second["execution_totals"]
+
+
+def test_failed_execution_cost_survives_resume(ar_settings, tmp_path, monkeypatch):
+    from inference_scaling.app.ar import ARFamily
+
+    ar_settings["ar"]["engine"]["continuous_batching"]["workers"] = 2
+    solve = ARFamily.solve
+
+    def fail_after_generation(self, problem, seeds):
+        result = solve(self, problem, seeds)
+        if problem.id == "0":
+            raise RuntimeError("grading failed after generation")
+        return result
+
+    monkeypatch.setattr(ARFamily, "solve", fail_after_generation)
+    choices = Choices("sample", "ar", None, "gsm8k")
+    with pytest.raises(RuntimeError, match="grading failed"):
+        run(choices, ar_settings, tmp_path / "results")
+    path = next((tmp_path / "results").rglob("executions.json"))
+    failed = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert failed["status"] == "failed" and failed["cost"]["flops"] > 0 and len(failed["completed"]) == 1
+    monkeypatch.setattr(ARFamily, "solve", solve)
+    summary = run(choices, ar_settings, tmp_path / "results")
+    assert summary["records"] == 2 and summary["execution_totals"]["failed_executions"] == 1
+    assert summary["execution_totals"]["complete_accounting"]
+    assert summary["cost_total"]["flops"] > failed["cost"]["flops"]
+
+
+def test_fixed_is_uses_the_configured_shape_for_each_thinking_step(ar_settings, tmp_path):
+    ar_settings["ar"]["algorithms"]["is"].update(candidate_count=3, rollout_count=2, block_size=1)
+    summary = run(Choices("is", "ar", "consilience", "gsm8k"), ar_settings, tmp_path / "results")
+    record = json.loads((Path(summary["directory"]) / "records.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["output"]["sampling_scope"] == "thinking" and record["correct"]
+    steps = record["trace"]["steps"]
+    assert [step["prefix_length"] for step in steps] == [0, 1]
+    assert [len(step["candidate_log_weights"]) for step in steps] == [3, 3]
+    # Three candidates each have two completions; at the final block only the two fresh candidates need scoring.
+    assert [step["rollout_evaluations_performed"] for step in steps] == [6, 2]
+    assert all("plan" not in step for step in steps)
+
+
+def test_self_certainty_on_vllm_needs_the_fused_worker_or_an_exact_scorer(ar_settings, tmp_path):
+    ar_settings["ar"]["engine"]["backend"] = "vllm"
+    ar_settings["ar"]["engine"]["vllm"]["scalar_self_certainty"] = False
+    choices = Choices("is", "ar", "self_certainty", "gsm8k")
+    with pytest.raises(ValueError, match="whole next-token distribution"):
+        run(choices, ar_settings, tmp_path / "results")
+    ar_settings["ar"]["engine"]["vllm"]["fused_logprobs"] = True
+    assert run(choices, ar_settings, tmp_path / "results")["accuracy"] == 1.0
+    ar_settings["ar"]["engine"]["vllm"]["fused_logprobs"] = False
+    ar_settings["ar"]["engine"]["vllm"]["scalar_self_certainty"] = True
+    ar_settings["rewards"]["self_certainty"]["score_temperature"] = ar_settings["ar"]["sampling"]["temperature"]
+    assert run(choices, ar_settings, tmp_path / "scalar-results")["accuracy"] == 1.0
+
+
+def test_text_rewards_fall_back_from_the_thinking_scope(ar_settings, tmp_path):
+    summary = run(Choices("is", "ar", "verifier", "gsm8k"), ar_settings, tmp_path / "results")
+    record = json.loads((Path(summary["directory"]) / "records.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert record["output"]["sampling_scope"] == "full"
+    assert record["fallbacks"] == ["reward_uses_full_sequence"]
+    assert summary["failures"]["fallbacks"] == {"reward_uses_full_sequence": 2}

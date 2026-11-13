@@ -10,7 +10,9 @@ muyuan/
 │   └── templates/
 ├── plugins/
 │   ├── goal-plus/
-│   └── speculative-execution/
+│   ├── inference_scaling/
+│   ├── self-speculation/
+│   └── pi-speculative-action/
 ├── docs/
 └── README.md
 ```
@@ -37,5 +39,7 @@ benchmarks/<name>/
 ## Plugins
 
 Goal Plus 和投机执行放在 `plugins/` 下。每个插件保留自己的源码、配置、测试、文档和构建入口，可以脱离 Benchmark 独立使用。
+
+Inference Scaling、Self Speculation 和 Pi Speculative Action 各自作为完整项目放在同名目录下；项目已有的评测、示例和报告保留原位置，以保持内部路径和独立使用方式。
 
 Benchmark 通过插件公开的 CLI、API 或其他稳定入口运行测试，不直接调用插件内部实现。
