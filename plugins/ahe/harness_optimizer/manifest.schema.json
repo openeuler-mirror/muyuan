@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autoharness.local/schemas/harness-manifest-v1.json",
+  "title": "Generic Harness Optimizer Manifest",
+  "type": "object",
+  "required": ["name", "validation", "adapter"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "version": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "string", "minLength": 1}]},
+    "description": {"type": "string"},
+    "baseline": {
+      "type": "object",
+      "properties": {"frozen": {"type": "boolean"}},
+      "additionalProperties": true
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "path", "mutable"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).*"},
+          "mutable": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "validation": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "array", "minItems": 1, "items": {"type": "string"}}]},
+        "timeout_s": {"type": "number", "exclusiveMinimum": 0},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "adapter": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}, "additionalProperties": true}
+      ]
+    },
+    "references": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "path": {"type": "string", "minLength": 1},
+                  "max_chars": {"type": "integer", "minimum": 1000}
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "debugger": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        {
+          "type": "object",
+          "required": ["command"],
+          "properties": {
+            "command": {
+              "oneOf": [
+                {"type": "string", "minLength": 1},
+                {"type": "array", "minItems": 1, "items": {"type": "string"}}
+              ]
+            },
+            "timeout_s": {"type": "number", "exclusiveMinimum": 0},
+            "on": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "root": {"type": "string", "minLength": 1},
+        "runtime_root": {"type": "string", "minLength": 1},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "path", "mutable"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "kind": {"type": "string", "minLength": 1},
+              "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).*"},
+              "mutable": {"type": "boolean"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime_root": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

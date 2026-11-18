@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoHarness Convergence"
+  short_description: "Analyze AHE history and steer faster convergence"
+  default_prompt: "Use $autoharness-convergence to analyze AHE runs and choose the next evidence-preserving harness optimization."

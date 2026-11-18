@@ -1,0 +1,23 @@
+{
+  "name": "my-harness",
+  "version": "1.0",
+  "description": "任意 harness 的最小 manifest 模板：修改范围对齐 AHE 论文（arXiv:2604.25850, NexAU）的 7 类可编辑组件，按需把 path 改成你的可变文件/目录；缺失的组件类直接删掉",
+  "patch_mode": "structured",
+  "baseline_frozen": true,
+  "adapter": {"name": "generic"},
+  "components": [
+    {"id": "system_prompt", "kind": "prompt", "path": "prompts/system.md", "mutable": true},
+    {"id": "tool_description", "kind": "prompt", "path": "tools/descriptions.md", "mutable": true},
+    {"id": "tool_implementation", "kind": "runtime_core", "path": "src", "mutable": true},
+    {"id": "middleware", "kind": "middleware", "path": "assets/pi/extensions", "mutable": true},
+    {"id": "skill", "kind": "skill", "path": ".agents/skills", "mutable": true},
+    {"id": "sub_agent_config", "kind": "config", "path": "assets/codex/agents", "mutable": true},
+    {"id": "long_term_memory", "kind": "memory", "path": "memory", "mutable": true},
+    {"id": "readme", "kind": "docs", "path": "README.md", "mutable": false}
+  ],
+  "validation": {
+    "command": ["python", "-m", "compileall", "-q", "src"],
+    "timeout_s": 600
+  },
+  "evaluation": {"metrics": ["accuracy", "tokens", "time_s"]}
+}

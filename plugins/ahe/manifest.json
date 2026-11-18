@@ -1,0 +1,19 @@
+{
+  "name": "ahe",
+  "format": 1,
+  "type": "pi-extension",
+  "description": "Agentic Harness Engineering —— 通过 /ahe 命令优化任意 harness",
+  "activation_command": "/ahe",
+  "entry": "assets/pi/extensions/ahe.ts",
+  "engine": "plugins/ahe/ahe.py",
+  "codex": {
+    "type": "codex-custom-prompt",
+    "activation_command": "/ahe",
+    "prompt": "assets/codex/prompts/ahe.md",
+    "installer": "install.py --codex"
+  },
+  "dependencies": {
+    "python": ">=3.10",
+    "llm_api": "OpenAI-compatible endpoint"
+  }
+}

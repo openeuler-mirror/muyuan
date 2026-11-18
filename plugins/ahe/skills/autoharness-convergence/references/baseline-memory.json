@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "memory_id": "ahe-pilot-history-2026-10-28",
+  "status": "reviewed_prior_read_only",
+  "source": "ahe-run-traces-archive",
+  "frozen_contract": [
+    "task_set",
+    "golden_data",
+    "evaluator_and_runner",
+    "eval_and_holdout_commands",
+    "quality_gate_and_score_parser",
+    "mutable_file_allowlist",
+    "environment_model_seed_and_time_budget",
+    "raw_trace_evidence_and_receipt_retention"
+  ],
+  "patterns": [
+    {
+      "id": "early_best_then_tail",
+      "examples": [
+        "ahe-run-wide-10round-20261025T141935Z",
+        "ahe-run-wide-eff-20261026T070723Z",
+        "ahe-run-wide-eff-20261026T122911Z"
+      ],
+      "signal": "A new best appears in the first few evaluations, followed by repeated baseline-like attempts.",
+      "default_action": "Preserve best-so-far, add novelty/no-op detection, and use a measured plateau or branch policy.",
+      "avoid": "Do not spend the next run only on more model calls or rewrite the evaluator."
+    },
+    {
+      "id": "zero_or_missing_scores",
+      "examples": [
+        "ahe-run-sparse-10round-*",
+        "ahe-run-sparse-keepuntil-*",
+        "ahe-run-wide-10round-20261025T082250Z"
+      ],
+      "signal": "Most evaluations are zero, missing, failed, or have no usable pass rate.",
+      "default_action": "Check environment, command, golden data, compile/runtime output, and score parsing before changing search policy.",
+      "avoid": "Do not call this a difficult optimization landscape or keep repeating the same proposal family."
+    },
+    {
+      "id": "counter_disagreement",
+      "examples": [
+        "ahe-run-iterations-20261027T182044Z"
+      ],
+      "signal": "Runner, Pi, debugger, and evaluator report materially different iteration or completion counts.",
+      "default_action": "Instrument lifecycle events and make zero-iteration/silent-success paths explicit failures.",
+      "avoid": "Do not optimize middleware, compaction, or prompts until accounting is reconciled."
+    },
+    {
+      "id": "fixed_baseline_repeat",
+      "examples": [
+        "ahe-run-10round-20261022T070142Z",
+        "ahe-run-wide-10round-20261024T134030Z"
+      ],
+      "signal": "The same baseline score dominates the candidate series.",
+      "default_action": "Check whether candidates actually differ; then add candidate fingerprints and no-op/duplicate suppression.",
+      "avoid": "Do not infer that a stable score means convergence unless a new best was observed."
+    }
+  ],
+  "default_change_classes": {
+    "trace_or_report_only": "A",
+    "pure_parser_or_replay_helper": "B",
+    "prompt_tool_memory_middleware_dispatch_or_acceptance": "C",
+    "evaluator_runner_task_set_holdout_or_quality_gate": "F"
+  }
+}
