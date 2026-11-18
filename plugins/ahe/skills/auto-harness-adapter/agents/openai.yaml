@@ -1,0 +1,7 @@
+interface:
+  display_name: "Auto Harness Adapter"
+  short_description: "Discover and review AHE harness edit surfaces"
+  default_prompt: "Use $auto-harness-adapter to generate and review a conservative AHE adapter manifest before optimizing a harness."
+
+policy:
+  allow_implicit_invocation: true
